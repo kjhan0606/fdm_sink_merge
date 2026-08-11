@@ -637,7 +637,8 @@ def _plot_dual_trajectory(
     figure = plt.figure(figsize=(7.15, 5.1))
     axis = figure.add_subplot(1, 1, 1, projection="3d")
     _style_3d_axis(axis)
-    axis.view_init(elev=25.0, azim=-52.0)
+    axis.view_init(elev=12.5, azim=-52.0)
+    axis.zaxis._axinfo["juggled"] = (1, 2, 0)
 
     fitted_track_count = 0
     single_point_track_count = 0
