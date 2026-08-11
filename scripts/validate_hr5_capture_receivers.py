@@ -353,7 +353,7 @@ def _plot_validation(path: Path, data: dict[str, np.ndarray]) -> None:
         linewidth=1.1,
     )
     axes[3].set_yscale("log")
-    axes[3].set_xlabel(r"disappearances assigned to same SMBH")
+    axes[3].set_xlabel(r"removed SMBHs assigned to one survivor")
     axes[3].set_ylabel(r"event fraction")
     axes[3].set_xticks(value[visible])
     _panel_label(axes[3], "(d)")
