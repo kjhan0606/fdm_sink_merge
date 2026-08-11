@@ -643,6 +643,7 @@ def _plot_dual_trajectory(
     single_point_track_count = 0
     fitted_degrees: list[int] = []
     fit_residuals: list[float] = []
+    display_positions: list[np.ndarray] = [np.zeros((1, 3), dtype=np.float64)]
     for track in track_data:
         position = np.asarray(track["position_pkpc"])
         time = np.asarray(track["time_gyr"])
@@ -654,6 +655,7 @@ def _plot_dual_trajectory(
             position,
         )
         if degree > 0:
+            display_positions.append(fitted_position)
             fitted_redshift = np.interp(dense_time, cosmic_time, redshift)
             line_segments = np.stack(
                 (fitted_position[:-1], fitted_position[1:]),
@@ -674,6 +676,7 @@ def _plot_dual_trajectory(
             fit_residuals.append(residual_rms)
         else:
             single_point_track_count += 1
+        display_positions.append(position)
         axis.scatter(
             position[:, 0],
             position[:, 1],
@@ -698,6 +701,7 @@ def _plot_dual_trajectory(
         box_size_cmpc,
     )
     selection_relative = selection_delta * 1000.0 / (1.0 + redshift[selection_index])
+    display_positions.append(selection_relative[np.newaxis, :])
     selection_color = color_map(redshift_norm(float(redshift[selection_index])))
     axis.scatter(
         [0.0],
@@ -727,7 +731,7 @@ def _plot_dual_trajectory(
         zorder=22,
     )
 
-    axis.set_xlabel(r"$\Delta x$ [pkpc]", labelpad=3.0)
+    axis.set_xlabel(r"$\Delta x$ [pkpc]", labelpad=-2.0)
     axis.set_ylabel(r"$\Delta y$ [pkpc]", labelpad=3.0)
     axis.set_zlabel(r"$\Delta z$ [pkpc]", labelpad=-2.0)
     identity_handles = (
@@ -776,11 +780,24 @@ def _plot_dual_trajectory(
         columnspacing=2.1,
         handletextpad=0.6,
     )
-    limit = TRACK_RADIUS_PKPC
-    axis.set_xlim(-limit, limit)
-    axis.set_ylim(-limit, limit)
-    axis.set_zlim(-limit, limit)
-    axis.set_box_aspect((1.0, 1.0, 1.0))
+    combined_positions = np.vstack(display_positions)
+    display_lower = np.min(combined_positions, axis=0)
+    display_upper = np.max(combined_positions, axis=0)
+    display_center = 0.5 * (display_lower + display_upper)
+    display_half_span = 0.5 * float(np.max(display_upper - display_lower)) * 1.025
+    axis.set_xlim(
+        display_center[0] - display_half_span,
+        display_center[0] + display_half_span,
+    )
+    axis.set_ylim(
+        display_center[1] - display_half_span,
+        display_center[1] + display_half_span,
+    )
+    axis.set_zlim(
+        display_center[2] - display_half_span,
+        display_center[2] + display_half_span,
+    )
+    axis.set_box_aspect((1.0, 1.0, 1.0), zoom=1.15)
     colorbar = figure.colorbar(
         plt.cm.ScalarMappable(norm=redshift_norm, cmap=color_map),
         ax=axis,
@@ -791,7 +808,7 @@ def _plot_dual_trajectory(
     colorbar.set_label("redshift")
     figure.subplots_adjust(left=0.02, right=0.84, bottom=0.03, top=0.82)
     output.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(output, bbox_inches="tight", pad_inches=0.035)
+    figure.savefig(output, bbox_inches="tight", pad_inches=0.09)
     plt.close(figure)
     return {
         "root_sink_id": root_id,
@@ -814,6 +831,8 @@ def _plot_dual_trajectory(
         "maximum_track_redshift": float(np.max(all_redshifts)),
         "track_radius_pkpc": TRACK_RADIUS_PKPC,
         "track_window_gyr": TRACK_WINDOW_GYR,
+        "display_half_span_pkpc": display_half_span,
+        "display_panel_zoom": 1.15,
     }
 
 
