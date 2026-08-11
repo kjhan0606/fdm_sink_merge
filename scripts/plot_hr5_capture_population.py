@@ -19,6 +19,27 @@ from matplotlib.colors import LogNorm
 
 COLORS = ("#000000", "#0072B2", "#D55E00", "#009E73")
 LINE_STYLES = ("-", "--", "-.", ":")
+REDSHIFT_TICKS = (1.0, 2.0, 4.0, 6.0, 10.0)
+
+
+def _coordinate_to_redshift(coordinate: np.ndarray) -> np.ndarray:
+    return np.power(10.0, coordinate) - 1.0
+
+
+def _redshift_to_coordinate(redshift: np.ndarray) -> np.ndarray:
+    return np.log10(1.0 + redshift)
+
+
+def _add_redshift_axis(axis: plt.Axes) -> None:
+    axis.tick_params(axis="x", which="both", top=False)
+    redshift_axis = axis.secondary_xaxis(
+        "top",
+        functions=(_coordinate_to_redshift, _redshift_to_coordinate),
+    )
+    redshift_axis.set_xlabel(r"redshift $z_{\rm cap}$", labelpad=2.0)
+    redshift_axis.set_xticks(REDSHIFT_TICKS)
+    redshift_axis.minorticks_off()
+    redshift_axis.tick_params(axis="x", direction="in", pad=2.0)
 
 
 def _panel_label(axis: plt.Axes, label: str) -> None:
@@ -136,6 +157,7 @@ def make_figure(
     axes[0].set_ylim(1.0e-6, 3.0e-1)
     axes[0].set_xlabel(r"$\log_{10}(1+z_{\rm cap})$")
     axes[0].set_ylabel(r"$\mathcal{R}_\mathrm{cap}$ [cMpc$^{-3}$ Gyr$^{-1}$]")
+    _add_redshift_axis(axes[0])
     axes[0].legend(
         title=r"$\mathcal{M}_{\rm c}/M_\odot\geq$",
         frameon=False,
@@ -172,6 +194,7 @@ def make_figure(
     axes[1].set_ylim(3.8, 9.8)
     axes[1].set_xlabel(r"$\log_{10}(1+z_{\rm cap})$")
     axes[1].set_ylabel(r"$\log_{10}(\mathcal{M}_\mathrm{c}/M_\odot)$")
+    _add_redshift_axis(axes[1])
     _panel_label(axes[1], "(b)")
     colorbar = figure.colorbar(mesh, ax=axes[1], pad=0.02, fraction=0.05)
     colorbar.set_label(r"$N$", fontsize=10, labelpad=2)
