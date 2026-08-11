@@ -48,6 +48,8 @@ TRACK_RADIUS_PKPC = 50.0
 TRACK_WINDOW_GYR = 1.0
 MASS_SCALE_LOG_MIN = 4.0
 MASS_SCALE_LOG_MAX = 10.0
+MASS_MARKER_AREA_MIN = 7.0
+MASS_MARKER_AREA_MAX = 210.0
 
 
 def _plot_settings() -> None:
@@ -272,7 +274,9 @@ def _mass_marker_area(mass_msun: float | np.ndarray) -> float | np.ndarray:
         0.0,
         1.0,
     )
-    return 10.0 + 70.0 * normalized_mass
+    return MASS_MARKER_AREA_MIN + (
+        MASS_MARKER_AREA_MAX - MASS_MARKER_AREA_MIN
+    ) * normalized_mass
 
 
 def _plot_capture_tree(
@@ -291,6 +295,8 @@ def _plot_capture_tree(
     row_for_child = {int(catalog["sink_id"][row]): row for row in rows}
     major_color = "#26456E"
     minor_color = "#B5B5B5"
+    mass_color_map = plt.get_cmap("viridis")
+    mass_color_norm = Normalize(vmin=MASS_SCALE_LOG_MIN, vmax=MASS_SCALE_LOG_MAX)
     figure = plt.figure(figsize=(7.15, 5.1))
     grid = figure.add_gridspec(
         1,
@@ -307,7 +313,6 @@ def _plot_capture_tree(
     lower_time = float(np.interp(maximum_redshift, redshift[::-1], cosmic_time[::-1]))
     final_time = float(cosmic_time[-1])
     branch_color: dict[int, str] = {}
-    branch_alpha: dict[int, float] = {}
     mass_markers: dict[tuple[int, int], float] = {}
 
     for node in sorted(nodes):
@@ -334,7 +339,6 @@ def _plot_capture_tree(
             width = 0.65 + 1.35 * np.sqrt(min(1.0, mass_ratio))
             zorder = 7 if mass_ratio >= MAJOR_MASS_RATIO else 2
         branch_color[node] = color
-        branch_alpha[node] = alpha
         if end >= lower_time:
             axis.plot(
                 [positions[node], positions[node]],
@@ -384,14 +388,17 @@ def _plot_capture_tree(
         mass_markers[(parent, capture_index)] = float(parent_state[capture_index, 0])
 
     for (node, state_index), mass_msun in mass_markers.items():
+        marker_log_mass = float(
+            np.clip(np.log10(mass_msun), MASS_SCALE_LOG_MIN, MASS_SCALE_LOG_MAX)
+        )
         axis.scatter(
             [positions[node]],
             [cosmic_time[state_index]],
             s=_mass_marker_area(mass_msun),
-            facecolor="white",
+            facecolor=mass_color_map(mass_color_norm(marker_log_mass)),
             edgecolor=branch_color[node],
-            linewidth=0.75,
-            alpha=max(branch_alpha[node], 0.48),
+            linewidth=0.85,
+            alpha=0.92,
             zorder=12,
         )
 
@@ -434,21 +441,33 @@ def _plot_capture_tree(
         columnspacing=1.5,
         handletextpad=0.7,
     )
-    scale_log_mass = np.array((4.0, 6.0, 8.0, 10.0))
+    scale_log_mass = np.arange(
+        MASS_SCALE_LOG_MIN,
+        MASS_SCALE_LOG_MAX + 0.25,
+        0.5,
+    )
     mass_axis.scatter(
         np.full(scale_log_mass.size, 0.42),
         scale_log_mass,
         s=_mass_marker_area(10.0**scale_log_mass),
-        facecolor="white",
+        facecolor=mass_color_map(mass_color_norm(scale_log_mass)),
         edgecolor="#4A4A4A",
-        linewidth=0.75,
+        linewidth=0.85,
+        alpha=0.92,
         clip_on=False,
     )
     mass_axis.set_xlim(0.0, 1.0)
     mass_axis.set_ylim(MASS_SCALE_LOG_MIN - 0.6, MASS_SCALE_LOG_MAX + 0.6)
     mass_axis.set_xticks([])
-    mass_axis.set_yticks(scale_log_mass)
-    mass_axis.set_yticklabels(tuple(rf"$10^{{{int(value)}}}$" for value in scale_log_mass))
+    labeled_log_mass = np.arange(
+        MASS_SCALE_LOG_MIN,
+        MASS_SCALE_LOG_MAX + 0.5,
+        1.0,
+    )
+    mass_axis.set_yticks(labeled_log_mass)
+    mass_axis.set_yticklabels(
+        tuple(rf"$10^{{{int(value)}}}$" for value in labeled_log_mass)
+    )
     mass_axis.yaxis.tick_right()
     mass_axis.yaxis.set_label_position("right")
     mass_axis.set_ylabel(r"SMBH mass [$M_\odot$]", labelpad=7.0)
