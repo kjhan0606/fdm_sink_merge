@@ -112,11 +112,17 @@ hierarchy contains 121 sink particles and 120 assigned links. Twenty-eight
 removed SMBHs are assigned directly to SMBH 11799, and the deepest branch has
 four links. The second figure follows SMBH 33570, the most massive member of
 the dual-AGN sample at output 117, together with the 16 removed SMBHs assigned
-directly to it. Its first panel shows the unwrapped comoving path relative to
-the position at selection. Its second panel shows the final continuous portion
-of each relative path within 50 pkpc and during the preceding 1 Gyr. The dual
-classification applies only at output 117. The assigned links do not verify
-the physical capture partner and do not establish SMBH coalescence.
+directly to it. The figure gives root-centered physical coordinates for the
+final continuous portion of each path within 50 pkpc and during the preceding
+1 Gyr. Each coordinate is fitted against cosmic time with a polynomial of
+degree no greater than three within a smoothing spline. The combined target
+residual in three dimensions is 3 pkpc. The fit uses a lower degree when fewer
+than four positions are available and is omitted for a single position. Every
+fit is limited to the sampled time interval and is constrained to the measured
+end points. Marker area gives SMBH mass while marker and curve colors give
+redshift. The dual classification applies only at output 117. The fitted paths
+do not verify the physical capture partner and do not establish SMBH
+coalescence.
 
 In the hierarchy, circle area scales linearly with the logarithm of the
 recorded SMBH mass and the interior color follows the same mass scale. Circles

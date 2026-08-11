@@ -13,13 +13,14 @@ import matplotlib
 
 matplotlib.use("Agg")
 
-import matplotlib.patheffects as path_effects
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.cosmology import FlatLambdaCDM
 from matplotlib.colors import Normalize
 from matplotlib.lines import Line2D
 from matplotlib.ticker import MaxNLocator
+from mpl_toolkits.mplot3d.art3d import Line3DCollection
+from scipy.interpolate import UnivariateSpline
 
 from fdm_smbh_delay.hr5 import (
     HEADER_DTYPE,
@@ -46,6 +47,7 @@ BOX_SIZE_CMPC = 1048.5
 MAJOR_MASS_RATIO = 0.1
 TRACK_RADIUS_PKPC = 50.0
 TRACK_WINDOW_GYR = 1.0
+TRACK_FIT_TARGET_RMS_PKPC = 3.0
 MASS_SCALE_LOG_MIN = 4.0
 MASS_SCALE_LOG_MAX = 10.0
 MASS_MARKER_AREA_MIN = 7.0
@@ -69,23 +71,6 @@ def _plot_settings() -> None:
             "pdf.fonttype": 42,
             "ps.fonttype": 42,
         }
-    )
-
-
-def _panel_label(axis: plt.Axes, label: str) -> None:
-    label_text = axis.text2D(
-        0.04,
-        0.96,
-        label,
-        transform=axis.transAxes,
-        ha="left",
-        va="top",
-        color="black",
-        fontweight="bold",
-        zorder=50,
-    )
-    label_text.set_path_effects(
-        [path_effects.withStroke(linewidth=1.6, foreground="white")]
     )
 
 
@@ -488,11 +473,6 @@ def _plot_capture_tree(
     }
 
 
-def _unwrap_root(position: np.ndarray, box_size_cmpc: float) -> np.ndarray:
-    step = _minimum_image(np.diff(position, axis=0), box_size_cmpc)
-    return np.vstack((np.zeros(3), np.cumsum(step, axis=0)))
-
-
 def _last_near_segment(
     indices: np.ndarray,
     separation_pkpc: np.ndarray,
@@ -525,6 +505,68 @@ def _style_3d_axis(axis: plt.Axes) -> None:
         coordinate_axis._axinfo["grid"]["linewidth"] = 0.4
 
 
+def _fit_parametric_spline(
+    time_gyr: np.ndarray,
+    position_pkpc: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, int, float]:
+    if time_gyr.size < 2:
+        return time_gyr.copy(), position_pkpc.copy(), 0, 0.0
+    duration = float(time_gyr[-1] - time_gyr[0])
+    if duration <= 0.0:
+        return time_gyr[-1:].copy(), position_pkpc[-1:].copy(), 0, 0.0
+    normalized_time = (time_gyr - time_gyr[0]) / duration
+    dense_normalized_time = np.linspace(
+        0.0,
+        1.0,
+        max(60, 8 * (time_gyr.size - 1) + 1),
+    )
+    weights = np.ones(time_gyr.size)
+    weights[[0, -1]] = 10.0
+    maximum_degree = min(3, time_gyr.size - 1)
+    observed_extent = float(np.max(np.linalg.norm(position_pkpc, axis=1)))
+    permitted_extent = max(observed_extent + 5.0, 1.25 * observed_extent)
+    smoothing_limit = (
+        time_gyr.size * TRACK_FIT_TARGET_RMS_PKPC**2 / 3.0
+        if time_gyr.size >= 4
+        else 0.0
+    )
+
+    for degree in range(maximum_degree, 0, -1):
+        fitted_position = np.empty((dense_normalized_time.size, 3))
+        sampled_fit = np.empty_like(position_pkpc)
+        for coordinate in range(3):
+            spline = UnivariateSpline(
+                normalized_time,
+                position_pkpc[:, coordinate],
+                w=weights,
+                k=degree,
+                s=smoothing_limit,
+                ext=2,
+            )
+            fitted_coordinate = spline(dense_normalized_time)
+            sampled_coordinate = spline(normalized_time)
+            first_offset = position_pkpc[0, coordinate] - fitted_coordinate[0]
+            last_offset = position_pkpc[-1, coordinate] - fitted_coordinate[-1]
+            fitted_coordinate += (
+                (1.0 - dense_normalized_time) * first_offset
+                + dense_normalized_time * last_offset
+            )
+            sampled_coordinate += (
+                (1.0 - normalized_time) * first_offset
+                + normalized_time * last_offset
+            )
+            fitted_position[:, coordinate] = fitted_coordinate
+            sampled_fit[:, coordinate] = sampled_coordinate
+        fitted_extent = float(np.max(np.linalg.norm(fitted_position, axis=1)))
+        if fitted_extent <= permitted_extent or degree == 1:
+            residual_rms = float(
+                np.sqrt(np.mean(np.sum((sampled_fit - position_pkpc) ** 2, axis=1)))
+            )
+            dense_time = time_gyr[0] + dense_normalized_time * duration
+            return dense_time, fitted_position, degree, residual_rms
+    raise RuntimeError("No stable spline fit was found")
+
+
 def _plot_dual_trajectory(
     output: Path,
     root: dict[str, float | int],
@@ -540,39 +582,9 @@ def _plot_dual_trajectory(
     companion_id = int(root["companion_id"])
     selection_index = int(np.flatnonzero(output_number == int(root["output_number"]))[0])
     root_state = np.asarray(records[root_id]["state"][: redshift.size], dtype=np.float64)
-    root_active = np.flatnonzero(root_state[:, 0] > 0.0)
-    root_position = root_state[root_active, 1:4]
-    root_unwrapped_active = _unwrap_root(root_position, box_size_cmpc)
-    root_unwrapped = np.full((redshift.size, 3), np.nan)
-    root_unwrapped[root_active] = root_unwrapped_active
-    origin = root_unwrapped[selection_index].copy()
-    root_unwrapped -= origin
-
-    capture_redshifts = catalog["last_resolved_redshift"][direct_rows]
-    redshift_norm = Normalize(
-        vmin=float(np.min(capture_redshifts)),
-        vmax=float(np.max(capture_redshifts)),
-    )
-    color_map = plt.get_cmap("cividis_r")
-    figure = plt.figure(figsize=(7.15, 4.45))
-    first_axis = figure.add_subplot(1, 2, 1, projection="3d")
-    second_axis = figure.add_subplot(1, 2, 2, projection="3d")
-    _style_3d_axis(first_axis)
-    _style_3d_axis(second_axis)
-    first_axis.view_init(elev=22.0, azim=-58.0)
-    second_axis.view_init(elev=25.0, azim=-52.0)
-
-    first_axis.plot(
-        root_unwrapped[root_active, 0],
-        root_unwrapped[root_active, 1],
-        root_unwrapped[root_active, 2],
-        color="#D55E00",
-        lw=2.5,
-        zorder=20,
-        label=f"SMBH {root_id}",
-    )
-    relative_tracks: list[np.ndarray] = []
-    plotted_track_count = 0
+    track_data: list[dict[str, object]] = []
+    sampled_redshifts: list[np.ndarray] = []
+    sampled_masses: list[np.ndarray] = []
     for row in sorted(
         direct_rows,
         key=lambda value: int(catalog["assigned_capture_history_index"][value]),
@@ -600,54 +612,84 @@ def _plot_dual_trajectory(
         )
         lookup = {int(index): number for number, index in enumerate(shared)}
         local = np.asarray([lookup[int(index)] for index in segment_indices])
-        relative_segment = relative_pkpc[local]
-        absolute_segment = root_unwrapped[segment_indices] + delta[local]
-        child_mass = float(catalog["minor_mass_last_resolved_msun"][row])
-        parent_mass = float(catalog["receiver_mass_last_resolved_msun"][row])
-        mass_ratio = min(child_mass, parent_mass) / max(child_mass, parent_mass)
-        capture_redshift = float(catalog["last_resolved_redshift"][row])
-        highlighted = child_id == companion_id
-        color = "#CC79A7" if highlighted else color_map(redshift_norm(capture_redshift))
-        alpha = 1.0 if highlighted else 0.28 + 0.62 * min(1.0, np.sqrt(mass_ratio / 0.1))
-        width = 2.2 if highlighted else 0.65 + 1.8 * min(1.0, np.sqrt(mass_ratio))
-        first_axis.plot(
-            absolute_segment[:, 0],
-            absolute_segment[:, 1],
-            absolute_segment[:, 2],
-            color=color,
-            lw=width,
-            alpha=alpha,
-            zorder=12 if highlighted else 5,
+        segment_position = relative_pkpc[local]
+        segment_mass = child_state[segment_indices, 0]
+        segment_redshift = redshift[segment_indices]
+        track_data.append(
+            {
+                "child_id": child_id,
+                "position_pkpc": segment_position,
+                "time_gyr": cosmic_time[segment_indices],
+                "mass_msun": segment_mass,
+                "redshift": segment_redshift,
+                "highlighted": child_id == companion_id,
+            }
         )
-        second_axis.plot(
-            relative_segment[:, 0],
-            relative_segment[:, 1],
-            relative_segment[:, 2],
-            color=color,
-            lw=width,
-            alpha=alpha,
-            zorder=12 if highlighted else 5,
-        )
-        for axis, point in (
-            (first_axis, absolute_segment[-1]),
-            (second_axis, relative_segment[-1]),
-        ):
-            axis.scatter(
-                [point[0]],
-                [point[1]],
-                [point[2]],
-                s=13.0 if highlighted else 6.0,
-                facecolors="white",
-                edgecolors=color,
-                linewidths=0.7,
-                alpha=max(alpha, 0.55),
-                depthshade=False,
-                zorder=25,
-            )
-        relative_tracks.append(relative_segment)
-        plotted_track_count += 1
+        sampled_redshifts.append(segment_redshift)
+        sampled_masses.append(segment_mass)
 
-    selection_root = root_unwrapped[selection_index]
+    all_redshifts = np.concatenate(sampled_redshifts)
+    redshift_norm = Normalize(
+        vmin=float(np.min(all_redshifts)),
+        vmax=float(np.max(all_redshifts)),
+    )
+    color_map = plt.get_cmap("cividis_r")
+    figure = plt.figure(figsize=(7.15, 5.1))
+    axis = figure.add_subplot(1, 1, 1, projection="3d")
+    _style_3d_axis(axis)
+    axis.view_init(elev=25.0, azim=-52.0)
+
+    fitted_track_count = 0
+    single_point_track_count = 0
+    fitted_degrees: list[int] = []
+    fit_residuals: list[float] = []
+    for track in track_data:
+        position = np.asarray(track["position_pkpc"])
+        time = np.asarray(track["time_gyr"])
+        mass = np.asarray(track["mass_msun"])
+        track_redshift = np.asarray(track["redshift"])
+        highlighted = bool(track["highlighted"])
+        dense_time, fitted_position, degree, residual_rms = _fit_parametric_spline(
+            time,
+            position,
+        )
+        if degree > 0:
+            fitted_redshift = np.interp(dense_time, cosmic_time, redshift)
+            line_segments = np.stack(
+                (fitted_position[:-1], fitted_position[1:]),
+                axis=1,
+            )
+            segment_redshift = 0.5 * (
+                fitted_redshift[:-1] + fitted_redshift[1:]
+            )
+            line_collection = Line3DCollection(
+                line_segments,
+                colors=color_map(redshift_norm(segment_redshift)),
+                linewidths=1.9 if highlighted else 0.85,
+                alpha=0.92 if highlighted else 0.48,
+            )
+            axis.add_collection3d(line_collection)
+            fitted_track_count += 1
+            fitted_degrees.append(degree)
+            fit_residuals.append(residual_rms)
+        else:
+            single_point_track_count += 1
+        axis.scatter(
+            position[:, 0],
+            position[:, 1],
+            position[:, 2],
+            s=_mass_marker_area(mass),
+            c=track_redshift,
+            cmap=color_map,
+            norm=redshift_norm,
+            marker="D" if highlighted else "o",
+            edgecolors="#CC79A7" if highlighted else "#4A4A4A",
+            linewidths=1.15 if highlighted else 0.45,
+            alpha=0.92,
+            depthshade=False,
+            zorder=24 if highlighted else 15,
+        )
+
     companion_state = np.asarray(
         records[companion_id]["state"][: redshift.size], dtype=np.float64
     )
@@ -656,68 +698,98 @@ def _plot_dual_trajectory(
         box_size_cmpc,
     )
     selection_relative = selection_delta * 1000.0 / (1.0 + redshift[selection_index])
-    selection_companion = selection_root + selection_delta
-    first_axis.scatter(
-        [selection_root[0]], [selection_root[1]], [selection_root[2]],
-        marker="*", s=58.0, color="#D55E00", edgecolor="white", linewidth=0.6,
-        depthshade=False, zorder=35,
+    selection_color = color_map(redshift_norm(float(redshift[selection_index])))
+    axis.scatter(
+        [0.0],
+        [0.0],
+        [0.0],
+        marker="*",
+        s=_mass_marker_area(float(root["mass_msun"])),
+        color=selection_color,
+        edgecolor="#D55E00", linewidth=1.5, depthshade=False, zorder=35,
     )
-    first_axis.scatter(
-        [selection_companion[0]], [selection_companion[1]], [selection_companion[2]],
-        marker="D", s=24.0, color="#CC79A7", edgecolor="white", linewidth=0.6,
-        depthshade=False, zorder=35,
-    )
-    second_axis.scatter(
-        [0.0], [0.0], [0.0], marker="*", s=64.0, color="#D55E00",
-        edgecolor="white", linewidth=0.6, depthshade=False, zorder=35,
-    )
-    second_axis.scatter(
+    axis.scatter(
         [selection_relative[0]], [selection_relative[1]], [selection_relative[2]],
-        marker="D", s=25.0, color="#CC79A7", edgecolor="white", linewidth=0.6,
+        marker="D",
+        s=_mass_marker_area(float(root["companion_mass_msun"])),
+        color=selection_color,
+        edgecolor="#CC79A7",
+        linewidth=1.4,
         depthshade=False, zorder=35,
     )
-    second_axis.plot(
+    axis.plot(
         [0.0, selection_relative[0]],
         [0.0, selection_relative[1]],
         [0.0, selection_relative[2]],
-        color="#CC79A7", ls=(0, (2.0, 1.4)), lw=1.0, zorder=22,
+        color=selection_color,
+        ls=(0, (2.0, 1.4)),
+        lw=1.0,
+        zorder=22,
     )
 
-    first_axis.set_xlabel(r"$X-X_{\rm sel}$ [cMpc]", labelpad=3.0)
-    first_axis.set_ylabel(r"$Y-Y_{\rm sel}$ [cMpc]", labelpad=3.0)
-    first_axis.set_zlabel(r"$Z-Z_{\rm sel}$ [cMpc]", labelpad=0.0)
-    second_axis.set_xlabel(r"$\Delta x$ [pkpc]", labelpad=3.0)
-    second_axis.set_ylabel(r"$\Delta y$ [pkpc]", labelpad=3.0)
-    second_axis.set_zlabel(r"$\Delta z$ [pkpc]", labelpad=0.0)
-    _panel_label(first_axis, "(a)")
-    _panel_label(second_axis, "(b)")
-    first_axis.legend(
-        handles=(
-            Line2D([0], [0], color="#D55E00", lw=2.5, label=f"SMBH {root_id}"),
-            Line2D([0], [0], color="#777777", lw=1.0, label=f"removed SMBHs assigned to {root_id}"),
-            Line2D([0], [0], marker="D", color="none", markerfacecolor="#CC79A7", markeredgecolor="white", label=f"dual companion {companion_id}"),
-        ),
-        frameon=False,
-        loc="upper right",
-        bbox_to_anchor=(0.99, 0.94),
+    axis.set_xlabel(r"$\Delta x$ [pkpc]", labelpad=3.0)
+    axis.set_ylabel(r"$\Delta y$ [pkpc]", labelpad=3.0)
+    axis.set_zlabel(r"$\Delta z$ [pkpc]", labelpad=-2.0)
+    identity_handles = (
+        Line2D([0], [0], color="#777777", lw=1.3, label="smoothing spline"),
+        Line2D([0], [0], marker="o", color="none", markerfacecolor="#888888", markeredgecolor="#4A4A4A", label="stored output"),
+        Line2D([0], [0], marker="*", color="none", markerfacecolor="#888888", markeredgecolor="#D55E00", label=f"SMBH {root_id}"),
+        Line2D([0], [0], marker="D", color="none", markerfacecolor="#888888", markeredgecolor="#CC79A7", label=f"dual companion {companion_id}"),
     )
-    if relative_tracks:
-        limit = TRACK_RADIUS_PKPC
-        second_axis.set_xlim(-limit, limit)
-        second_axis.set_ylim(-limit, limit)
-        second_axis.set_zlim(-limit, limit)
-        second_axis.set_box_aspect((1.0, 1.0, 1.0))
-    root_extent = np.ptp(root_unwrapped[root_active], axis=0)
-    first_axis.set_box_aspect(np.maximum(root_extent, 0.18 * np.max(root_extent)))
+    figure.legend(
+        handles=identity_handles,
+        frameon=False,
+        loc="upper center",
+        bbox_to_anchor=(0.47, 0.995),
+        ncol=4,
+        columnspacing=1.5,
+        handletextpad=0.7,
+    )
+    mass_legend_values = np.array((1.0e4, 1.0e6, 1.0e8, 1.0e9))
+    mass_handles = tuple(
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="none",
+            markerfacecolor="#888888",
+            markeredgecolor="#4A4A4A",
+            markersize=float(np.sqrt(_mass_marker_area(value))),
+            label=rf"$10^{{{int(np.log10(value))}}}$",
+        )
+        for value in mass_legend_values
+    )
+    figure.text(
+        0.19,
+        0.905,
+        r"SMBH mass [$M_\odot$]",
+        ha="right",
+        va="center",
+        fontsize=7.0,
+    )
+    figure.legend(
+        handles=mass_handles,
+        frameon=False,
+        loc="upper center",
+        bbox_to_anchor=(0.52, 0.936),
+        ncol=4,
+        columnspacing=2.1,
+        handletextpad=0.6,
+    )
+    limit = TRACK_RADIUS_PKPC
+    axis.set_xlim(-limit, limit)
+    axis.set_ylim(-limit, limit)
+    axis.set_zlim(-limit, limit)
+    axis.set_box_aspect((1.0, 1.0, 1.0))
     colorbar = figure.colorbar(
         plt.cm.ScalarMappable(norm=redshift_norm, cmap=color_map),
-        ax=(first_axis, second_axis),
-        pad=0.11,
-        fraction=0.026,
-        shrink=0.72,
+        ax=axis,
+        pad=0.085,
+        fraction=0.032,
+        shrink=0.74,
     )
-    colorbar.set_label("redshift at final resolved output")
-    figure.subplots_adjust(left=0.015, right=0.83, bottom=0.08, top=0.98, wspace=0.10)
+    colorbar.set_label("redshift")
+    figure.subplots_adjust(left=0.02, right=0.84, bottom=0.03, top=0.82)
     output.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(output, bbox_inches="tight", pad_inches=0.035)
     plt.close(figure)
@@ -730,7 +802,16 @@ def _plot_dual_trajectory(
         "dual_companion_mass_msun": float(root["companion_mass_msun"]),
         "dual_separation_pkpc": float(root["separation_pkpc"]),
         "direct_assigned_capture_count": len(direct_rows),
-        "plotted_track_count": plotted_track_count,
+        "plotted_track_count": len(track_data),
+        "stored_track_point_count": int(sum(len(value) for value in sampled_masses)),
+        "fitted_track_count": fitted_track_count,
+        "single_point_track_count": single_point_track_count,
+        "maximum_spline_degree": max(fitted_degrees, default=0),
+        "target_fit_residual_pkpc": TRACK_FIT_TARGET_RMS_PKPC,
+        "median_fit_residual_pkpc": float(np.median(fit_residuals)),
+        "maximum_fit_residual_pkpc": float(np.max(fit_residuals)),
+        "minimum_track_redshift": float(np.min(all_redshifts)),
+        "maximum_track_redshift": float(np.max(all_redshifts)),
         "track_radius_pkpc": TRACK_RADIUS_PKPC,
         "track_window_gyr": TRACK_WINDOW_GYR,
     }
@@ -816,6 +897,7 @@ def make_figures(
             "links": "Every branch connection uses the surviving SMBH assigned by the distance and mass criteria.",
             "capture": "The plotted links represent possible numerical binary captures rather than verified capture partners or physical coalescences.",
             "activity": "The dual-AGN classification applies at the selected output and does not supply a continuous luminosity history.",
+            "trajectory_fit": "The smoothing splines interpolate stored positions for visualization and do not integrate SMBH orbits.",
         },
     }
     (output_directory / "hr5_capture_histories_summary.json").write_text(
