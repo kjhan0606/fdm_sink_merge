@@ -144,6 +144,7 @@ python scripts/extract_hr5_capture_catalog.py \
 
 python scripts/reproduce_hr5_original_figures.py --rebuild-cache
 python scripts/validate_hr5_capture_receivers.py
+python scripts/analyze_hr5_dual_agn_redshift.py
 python scripts/analyze_hr5_dual_agn.py
 python scripts/plot_hr5_capture_histories.py
 ```
@@ -151,13 +152,15 @@ python scripts/plot_hr5_capture_histories.py
 The first command produces 576,278 binary-capture intervals from 1,688,677 sink
 histories. The second command redraws Figures 1--13 of the earlier HR5 draft.
 The third command tests the assigned surviving SMBHs against the phase-space
-phase-space states and consecutive MkAGN outputs. The fourth command measures
-spatially selected dual AGN candidates and single-AGN pairs, estimates spatial
-variance with an eight-region jackknife, and constructs matched pure
-two-member comparisons with interval and right censoring.
-The fifth command draws the assigned capture hierarchy of the most massive
-final SMBH and the three-dimensional trajectories associated with the most
-massive member of the dual-AGN sample at output 117.
+states and consecutive MkAGN outputs. The fourth command measures the
+redshift evolution of spatially selected dual AGN candidates in all available
+MkAGN snapshots. It also fits a local quadratic model at every plotted
+redshift. The fifth command performs the detailed active-pair analysis at
+outputs 89, 117, and 296, estimates spatial variance with an eight-region
+jackknife, and constructs matched pure two-member comparisons with interval
+and right censoring. The sixth command draws the assigned capture hierarchy of
+the most massive final SMBH and the three-dimensional trajectories associated
+with the most massive member of the dual-AGN sample at output 117.
 
 The disappearing sinks are measured directly, but the assigned surviving SMBHs
 come from distance and mass criteria rather than direct records of the capture

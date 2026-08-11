@@ -6,6 +6,8 @@ from astropy.cosmology import FlatLambdaCDM
 
 from fdm_smbh_delay.hr5 import (
     MKAGN_DTYPE,
+    MKAGN_DTYPE_200,
+    MKAGN_DTYPE_336,
     binned_source_rate,
     bootstrap_binned_source_rate,
     bootstrap_redshift_rate,
@@ -16,9 +18,11 @@ from fdm_smbh_delay.hr5 import (
     fit_redshift_rate,
     find_agn_pair_population,
     find_dual_agn_pairs,
+    hard_xray_luminosity_from_bolometric,
     histogram_quantiles,
     infer_capture_receivers,
     interval_censored_cumulative_bounds,
+    locally_weighted_logarithmic_trend,
     match_population_by_properties,
     pair_component_labels,
     pair_component_multiplicity,
@@ -44,6 +48,31 @@ def test_redshift_rate_fit_recovers_synthetic_curve() -> None:
     assert fit.z_star == pytest.approx(expected[1], rel=2.0e-4)
     assert fit.alpha == pytest.approx(expected[2], rel=2.0e-4)
     assert fit.beta == pytest.approx(expected[3], rel=2.0e-4)
+
+
+def test_local_logarithmic_trend_recovers_power_law_in_one_plus_redshift() -> None:
+    redshift = np.linspace(0.2, 8.0, 20)
+    value = 3.0e-6 * (1.0 + redshift) ** 2.5
+    evaluation = np.linspace(0.3, 7.8, 31)
+    fitted = locally_weighted_logarithmic_trend(
+        redshift,
+        value,
+        evaluation,
+        np.full(redshift.size, 0.1) * value,
+        neighbor_count=7,
+    )
+    expected = 3.0e-6 * (1.0 + evaluation) ** 2.5
+    assert fitted == pytest.approx(expected, rel=1.0e-10)
+
+
+def test_local_logarithmic_trend_omits_zero_measurements() -> None:
+    redshift = np.arange(7, dtype=float)
+    value = (1.0 + redshift) ** 2
+    value[0] = 0.0
+    fitted = locally_weighted_logarithmic_trend(
+        redshift, value, np.array([2.5]), neighbor_count=5
+    )
+    assert fitted[0] == pytest.approx((1.0 + 2.5) ** 2, rel=1.0e-12)
 
 
 def test_redshift_rate_bootstrap_is_reproducible_and_ordered() -> None:
@@ -156,6 +185,60 @@ def test_read_mkagn_snapshot(tmp_path) -> None:
     assert timestep == pytest.approx(2.0e4)
     assert loaded["sink_id"].tolist() == [3, 8]
     assert loaded["mass"].tolist() == [1.0e4, 2.0e4]
+
+
+@pytest.mark.parametrize("dtype", (MKAGN_DTYPE_200, MKAGN_DTYPE_336))
+def test_read_legacy_mkagn_snapshot_retains_luminosity(tmp_path, dtype) -> None:
+    path = tmp_path / "agn.00080.dat"
+    records = np.zeros(2, dtype=dtype)
+    records["sink_id"] = [4, 9]
+    records["mass"] = [3.0e6, 7.0e6]
+    records["Lbol"] = [2.0e43, 5.0e44]
+    with path.open("wb") as stream:
+        np.array([3.4], dtype="<f8").tofile(stream)
+        np.array([1.4e5], dtype="<f8").tofile(stream)
+        np.array([2], dtype="<i4").tofile(stream)
+        records.tofile(stream)
+    redshift, _, loaded = read_mkagn_snapshot(path)
+    assert redshift == pytest.approx(3.4)
+    assert loaded.dtype.itemsize == dtype.itemsize
+    assert loaded["sink_id"].tolist() == [4, 9]
+    assert loaded["Lbol"].tolist() == [2.0e43, 5.0e44]
+
+
+def test_hard_xray_luminosity_reconstructs_legacy_correction() -> None:
+    bolometric = np.array([0.0, 1.0e43, 1.0e45, np.nan])
+    hard_xray = hard_xray_luminosity_from_bolometric(bolometric)
+    scaled = bolometric[1:3] / 3.9e43
+    expected = bolometric[1:3] / (
+        4.073 * scaled ** (-0.026) + 12.60 * scaled**0.078
+    )
+    assert hard_xray[0] == 0.0
+    assert np.allclose(hard_xray[1:3], expected)
+    assert np.isnan(hard_xray[3])
+
+
+def test_legacy_mkagn_pairs_derive_hard_xray_luminosity() -> None:
+    records = np.zeros(2, dtype=MKAGN_DTYPE_200)
+    records["sink_id"] = [1, 2]
+    records["mass"] = [1.0e7, 2.0e7]
+    records["Lbol"] = [2.0e44, 3.0e44]
+    records["x"] = [0.0, 0.01]
+    hard_xray = hard_xray_luminosity_from_bolometric(records["Lbol"])
+    pairs = find_agn_pair_population(
+        records,
+        redshift=0.0,
+        dimensionless_hubble=1.0,
+        luminosity_threshold_erg_s=float(np.min(hard_xray) * 0.9),
+        luminosity_field="LhX",
+        maximum_separation_pkpc=20.0,
+        box_size_cmpc_over_h=10.0,
+    )
+    assert pairs["is_dual"].tolist() == [True]
+    pair_luminosity = np.array(
+        [pairs["lhx_1_erg_s"][0], pairs["lhx_2_erg_s"][0]]
+    )
+    assert np.allclose(np.sort(pair_luminosity), np.sort(hard_xray))
 
 
 def test_infer_capture_receiver_uses_mass_cut_and_periodic_distance() -> None:

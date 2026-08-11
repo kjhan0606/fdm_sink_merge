@@ -544,41 +544,115 @@ def _plot_demographics(
     output_numbers = sorted(data, key=lambda item: float(data[item]["redshift"]))
     redshift = np.asarray([data[number]["redshift"] for number in output_numbers])
 
+    redshift_measurement_path = output.parent / "hr5_dual_agn_redshift_evolution.csv"
+    redshift_fit_path = output.parent / "hr5_dual_agn_redshift_local_fits.csv"
+    redshift_measurements: list[dict[str, str]] = []
+    redshift_fits: list[dict[str, str]] = []
+    if redshift_measurement_path.exists() and redshift_fit_path.exists():
+        with redshift_measurement_path.open(encoding="utf-8") as stream:
+            redshift_measurements = list(csv.DictReader(stream))
+        with redshift_fit_path.open(encoding="utf-8") as stream:
+            redshift_fits = list(csv.DictReader(stream))
+
     selections = (
         ("bol43", r"$L_{\rm bol}\geq10^{43}$", "-", COLORS[0], MARKERS[0]),
         ("bol44", r"$L_{\rm bol}\geq10^{44}$", "--", COLORS[1], MARKERS[1]),
         ("hx42", r"$L_{2-10\,{\rm keV}}\geq10^{42}$", ":", COLORS[2], MARKERS[2]),
     )
     for key, label, line_style, color, marker in selections:
-        count = np.asarray(
-            [data[number]["selection"][key]["statistics"]["dual_pair_count"] for number in output_numbers]
-        )
-        density = count / volume_cmpc3
-        axes[0].errorbar(
-            redshift,
-            density,
-            yerr=np.asarray(
+        if redshift_measurements:
+            selected_rows = [
+                row for row in redshift_measurements if row["selection"] == key
+            ]
+            measured_redshift = np.asarray(
+                [float(row["redshift"]) for row in selected_rows]
+            )
+            count = np.asarray(
+                [int(row["dual_pair_count"]) for row in selected_rows]
+            )
+            density = np.asarray(
+                [float(row["dual_pair_number_density_cmpc3"]) for row in selected_rows]
+            )
+            density_error = np.asarray(
                 [
-                    data[number]["selection"][key]["statistics"][
-                        "dual_pair_number_density_jackknife_error_cmpc3"
-                    ]
+                    float(row["dual_pair_number_density_jackknife_error_cmpc3"])
+                    for row in selected_rows
+                ]
+            )
+            detected = count > 0
+            axes[0].errorbar(
+                measured_redshift[detected],
+                density[detected],
+                yerr=density_error[detected],
+                color=color,
+                marker=marker,
+                mfc="white",
+                mec=color,
+                ms=4.0,
+                lw=0.8,
+                ls="none",
+                capsize=1.5,
+                label=label,
+                zorder=3,
+            )
+            if np.any(~detected):
+                axes[0].plot(
+                    measured_redshift[~detected],
+                    np.full(np.count_nonzero(~detected), -np.log(0.05) / volume_cmpc3),
+                    color=color,
+                    marker="v",
+                    mfc="white",
+                    ms=3.5,
+                    ls="none",
+                    zorder=2,
+                )
+            selected_fits = [row for row in redshift_fits if row["selection"] == key]
+            fit_redshift = np.asarray(
+                [float(row["redshift"]) for row in selected_fits]
+            )
+            fit_density = np.asarray(
+                [float(row["dual_pair_number_density_fit_cmpc3"]) for row in selected_fits]
+            )
+            axes[0].plot(
+                fit_redshift,
+                fit_density,
+                color=color,
+                lw=1.0,
+                ls=line_style,
+            )
+        else:
+            count = np.asarray(
+                [
+                    data[number]["selection"][key]["statistics"]["dual_pair_count"]
                     for number in output_numbers
                 ]
-            ),
-            color=color,
-            marker=marker,
-            mfc="white",
-            mec=color,
-            ms=4.2,
-            lw=1.0,
-            ls=line_style,
-            capsize=1.5,
-            label=label,
-        )
+            )
+            density = count / volume_cmpc3
+            axes[0].errorbar(
+                redshift,
+                density,
+                yerr=np.asarray(
+                    [
+                        data[number]["selection"][key]["statistics"][
+                            "dual_pair_number_density_jackknife_error_cmpc3"
+                        ]
+                        for number in output_numbers
+                    ]
+                ),
+                color=color,
+                marker=marker,
+                mfc="white",
+                mec=color,
+                ms=4.2,
+                lw=1.0,
+                ls=line_style,
+                capsize=1.5,
+                label=label,
+            )
     axes[0].set_yscale("log")
     axes[0].set_xlabel(r"$z$")
     axes[0].set_ylabel(r"$n_{\rm dual}$ [cMpc$^{-3}$]")
-    axes[0].legend(frameon=False, loc="lower right", handlelength=1.8)
+    axes[0].legend(frameon=False, loc="upper right", handlelength=1.8)
     _panel_label(axes[0], "(a)", x=0.04, horizontal_alignment="left")
 
     fraction_definitions = (
@@ -586,38 +660,103 @@ def _plot_demographics(
         ("dual_member_count", r"active SMBHs with companion", COLORS[1], MARKERS[1]),
         ("pure_dual_member_count", r"active SMBHs in two-member systems", COLORS[2], MARKERS[2]),
     )
-    active_count = np.asarray(
-        [data[number]["selection"]["bol43"]["statistics"]["active_agn_count"] for number in output_numbers]
-    )
-    for field, label, color, marker in fraction_definitions:
-        numerator = np.asarray(
-            [data[number]["selection"]["bol43"]["statistics"][field] for number in output_numbers]
+    if redshift_measurements:
+        selected_rows = [
+            row for row in redshift_measurements if row["selection"] == "bol43"
+        ]
+        measured_redshift = np.asarray(
+            [float(row["redshift"]) for row in selected_rows]
         )
-        fraction = numerator / active_count
-        if field == "dual_pair_count":
+        fraction_fields = {
+            "dual_pair_count": (
+                "dual_pair_fraction",
+                "dual_pair_fraction_jackknife_error",
+                "dual_pair_fraction_fit",
+            ),
+            "dual_member_count": (
+                "dual_member_fraction",
+                "dual_member_count_error_fraction",
+                "dual_member_fraction_fit",
+            ),
+            "pure_dual_member_count": (
+                "pure_dual_member_fraction",
+                "pure_dual_member_count_error_fraction",
+                "pure_dual_member_fraction_fit",
+            ),
+        }
+        selected_fits = [
+            row for row in redshift_fits if row["selection"] == "bol43"
+        ]
+        fit_redshift = np.asarray([float(row["redshift"]) for row in selected_fits])
+        for field, label, color, marker in fraction_definitions:
+            value_field, error_field, fit_field = fraction_fields[field]
+            fraction = np.asarray(
+                [float(row[value_field]) for row in selected_rows]
+            )
             fraction_error = np.asarray(
+                [float(row[error_field]) for row in selected_rows]
+            )
+            visible = np.isfinite(fraction) & (fraction > 0.0)
+            axes[1].errorbar(
+                measured_redshift[visible],
+                fraction[visible],
+                yerr=fraction_error[visible],
+                color=color,
+                marker=marker,
+                mfc="white",
+                mec=color,
+                ms=4.0,
+                lw=0.8,
+                ls="none",
+                capsize=1.5,
+                label=label,
+                zorder=3,
+            )
+            axes[1].plot(
+                fit_redshift,
+                np.asarray([float(row[fit_field]) for row in selected_fits]),
+                color=color,
+                lw=1.0,
+            )
+    else:
+        active_count = np.asarray(
+            [
+                data[number]["selection"]["bol43"]["statistics"]["active_agn_count"]
+                for number in output_numbers
+            ]
+        )
+        for field, label, color, marker in fraction_definitions:
+            numerator = np.asarray(
                 [
-                    data[number]["selection"]["bol43"]["statistics"][
-                        "dual_pair_fraction_jackknife_error"
-                    ]
+                    data[number]["selection"]["bol43"]["statistics"][field]
                     for number in output_numbers
                 ]
             )
-        else:
-            fraction_error = np.sqrt(numerator) / active_count
-        axes[1].errorbar(
-            redshift,
-            fraction,
-            yerr=fraction_error,
-            color=color,
-            marker=marker,
-            mfc="white",
-            mec=color,
-            ms=4.2,
-            lw=1.0,
-            capsize=1.5,
-            label=label,
-        )
+            fraction = numerator / active_count
+            if field == "dual_pair_count":
+                fraction_error = np.asarray(
+                    [
+                        data[number]["selection"]["bol43"]["statistics"][
+                            "dual_pair_fraction_jackknife_error"
+                        ]
+                        for number in output_numbers
+                    ]
+                )
+            else:
+                fraction_error = np.sqrt(numerator) / active_count
+            axes[1].errorbar(
+                redshift,
+                fraction,
+                yerr=fraction_error,
+                color=color,
+                marker=marker,
+                mfc="white",
+                mec=color,
+                ms=4.2,
+                lw=1.0,
+                capsize=1.5,
+                label=label,
+            )
     axes[1].set_yscale("log")
     axes[1].set_xlabel(r"$z$")
     axes[1].set_ylabel(r"fraction of active SMBHs")

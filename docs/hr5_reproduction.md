@@ -78,6 +78,7 @@ python scripts/extract_hr5_capture_catalog.py \
 
 python scripts/reproduce_hr5_original_figures.py --rebuild-cache
 python scripts/validate_hr5_capture_receivers.py
+python scripts/analyze_hr5_dual_agn_redshift.py
 python scripts/analyze_hr5_dual_agn.py
 python scripts/plot_hr5_capture_histories.py
 ```
@@ -171,7 +172,10 @@ separated from the measured curves and uncertainty intervals.
 
 ## Active SMBH pair selection and measurements
 
-The active-pair sample uses the MkAGN snapshots at outputs 89, 117, and 296.
+The redshift-evolution measurement uses all 17 available MkAGN snapshots from
+output 20 through output 296. The detailed active-pair calculation that
+includes projected observables, later possible binary captures, and matched
+single-AGN pairs uses outputs 89, 117, and 296.
 Both members of a dual AGN candidate satisfy the adopted bolometric-luminosity
 threshold. Exactly one member of a single-AGN pair satisfies the threshold.
 Every pair has a three-dimensional physical separation between 0.5 and
@@ -180,6 +184,24 @@ use different denominators. `N_pair/N_AGN` counts pair edges.
 `N_member/N_AGN` counts every unique active SMBH with an active companion. The
 pure-dual measure removes members of connected systems containing three or
 more active SMBHs.
+
+The available snapshots use three historical record lengths of 200, 336, and
+360 bytes. Every layout stores bolometric luminosity. The two longer layouts
+also store hard-X-ray luminosity while the 200-byte layout requires the
+bolometric correction implemented by the original MkAGN calculation. Applying
+the same correction to output 89 reproduces all 161,626 positive saved
+hard-X-ray luminosities to a maximum relative difference of
+`5.66e-16`.
+
+The fiducial selection first yields a nonzero pair count at redshift 8.666.
+The measured number density reaches `6.430e-4 cMpc^-3` at redshift 3.394 and
+decreases to `3.588e-6 cMpc^-3` at redshift 0.625. The files
+`hr5_dual_agn_redshift_evolution.csv` and
+`hr5_dual_agn_redshift_local_fits.csv` contain the direct measurements and the
+displayed local fits. Each fit relates logarithmic abundance to `log(1 + z)`
+with a quadratic model and tricube distance weights. The model at each plotted
+redshift uses the seven nearest outputs with at least three dual AGN
+candidates. Zero-count outputs are shown as 95 percent Poisson upper limits.
 
 | redshift | active AGN | dual pairs | number density [cMpc^-3] | pair/AGN | member/AGN | pure member/AGN |
 |---:|---:|---:|---:|---:|---:|---:|

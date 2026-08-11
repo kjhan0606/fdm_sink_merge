@@ -95,6 +95,136 @@ MKAGN_DTYPE = np.dtype(
     ],
     align=True,
 )
+MKAGN_DTYPE_336 = np.dtype(
+    {
+        "names": (
+            "x",
+            "y",
+            "z",
+            "vx",
+            "vy",
+            "vz",
+            "mass",
+            "Lbol",
+            "LhX",
+            "sink_id",
+            "mode",
+            "gid",
+            "global_gid",
+            "Mstar",
+            "Mgas",
+            "Mtot",
+            "Mdm",
+        ),
+        "formats": (
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<i4",
+            "<i4",
+            "<i4",
+            "<i4",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+        ),
+        "offsets": (
+            0,
+            8,
+            16,
+            24,
+            32,
+            40,
+            48,
+            192,
+            200,
+            288,
+            292,
+            296,
+            300,
+            304,
+            312,
+            320,
+            328,
+        ),
+        "itemsize": 336,
+    }
+)
+MKAGN_DTYPE_200 = np.dtype(
+    {
+        "names": (
+            "x",
+            "y",
+            "z",
+            "vx",
+            "vy",
+            "vz",
+            "mass",
+            "dMsmbh",
+            "dMBH_coarse",
+            "dMEd_coarse",
+            "Esave",
+            "Smag",
+            "eps",
+            "sink_id",
+            "mode",
+            "dtnew",
+            "dMBHoverdt",
+            "dMEdoverdt",
+            "Lbol",
+        ),
+        "formats": (
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<i4",
+            "<i4",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+        ),
+        "offsets": (
+            0,
+            8,
+            16,
+            24,
+            32,
+            40,
+            48,
+            112,
+            120,
+            128,
+            136,
+            144,
+            152,
+            160,
+            164,
+            168,
+            176,
+            184,
+            192,
+        ),
+        "itemsize": 200,
+    }
+)
 MKAGN_ID_OFFSETS = {200: 160, 336: 288, 360: 312}
 
 
@@ -152,6 +282,10 @@ def read_mkagn_snapshot(path: Path) -> tuple[float, float, np.ndarray]:
             )
         if record_size == MKAGN_DTYPE.itemsize:
             dtype = MKAGN_DTYPE
+        elif record_size == MKAGN_DTYPE_336.itemsize:
+            dtype = MKAGN_DTYPE_336
+        elif record_size == MKAGN_DTYPE_200.itemsize:
+            dtype = MKAGN_DTYPE_200
         else:
             dtype = np.dtype(
                 {
@@ -163,6 +297,22 @@ def read_mkagn_snapshot(path: Path) -> tuple[float, float, np.ndarray]:
             )
         records = np.fromfile(stream, dtype=dtype, count=int(count[0]))
     return float(redshift[0]), float(local_timestep_yr[0]), records
+
+
+def hard_xray_luminosity_from_bolometric(
+    bolometric_luminosity_erg_s: np.ndarray | float,
+) -> np.ndarray:
+    """Recover the 2--10 keV luminosity used by the legacy MkAGN calculation."""
+
+    bolometric = np.asarray(bolometric_luminosity_erg_s, dtype=np.float64)
+    hard_xray = np.zeros_like(bolometric)
+    positive = np.isfinite(bolometric) & (bolometric > 0.0)
+    scaled = bolometric[positive] / (1.0e10 * 3.9e33)
+    hard_xray[positive] = bolometric[positive] / (
+        4.073 * scaled ** (-0.026) + 12.60 * scaled**0.078
+    )
+    hard_xray[~np.isfinite(bolometric)] = np.nan
+    return hard_xray
 
 
 def infer_capture_receivers(
@@ -327,8 +477,10 @@ def find_agn_pair_population(
         "vy",
         "vz",
         "Lbol",
-        luminosity_field,
     }
+    available_luminosity_fields = {"Lbol", "LhX"}
+    if luminosity_field not in available_luminosity_fields:
+        required.add(luminosity_field)
     if records.dtype.names is None or not required.issubset(records.dtype.names):
         raise ValueError("The MkAGN record does not contain the requested AGN fields")
     if dimensionless_hubble <= 0.0:
@@ -346,7 +498,17 @@ def find_agn_pair_population(
     )
     population = records[usable]
     population_mass = mass_msun[usable]
-    luminosity = np.asarray(population[luminosity_field], dtype=np.float64)
+    population_lbol = np.asarray(population["Lbol"], dtype=np.float64)
+    if "LhX" in population.dtype.names:
+        population_lhx = np.asarray(population["LhX"], dtype=np.float64)
+    else:
+        population_lhx = hard_xray_luminosity_from_bolometric(population_lbol)
+    if luminosity_field == "Lbol":
+        luminosity = population_lbol
+    elif luminosity_field == "LhX":
+        luminosity = population_lhx
+    else:
+        luminosity = np.asarray(population[luminosity_field], dtype=np.float64)
     active = np.isfinite(luminosity) & (luminosity >= luminosity_threshold_erg_s)
 
     empty = {
@@ -436,15 +598,15 @@ def find_agn_pair_population(
         "separation_pkpc": separation_pkpc,
         "mass_1_msun": primary_mass,
         "mass_2_msun": secondary_mass,
-        "luminosity_1_erg_s": np.asarray(primary_record[luminosity_field], dtype=np.float64),
-        "luminosity_2_erg_s": np.asarray(secondary_record[luminosity_field], dtype=np.float64),
-        "lbol_1_erg_s": np.asarray(primary_record["Lbol"], dtype=np.float64),
-        "lbol_2_erg_s": np.asarray(secondary_record["Lbol"], dtype=np.float64),
-        "lhx_1_erg_s": np.asarray(primary_record["LhX"], dtype=np.float64),
-        "lhx_2_erg_s": np.asarray(secondary_record["LhX"], dtype=np.float64),
-        "eddington_ratio_1": np.asarray(primary_record["Lbol"], dtype=np.float64)
+        "luminosity_1_erg_s": luminosity[primary],
+        "luminosity_2_erg_s": luminosity[secondary],
+        "lbol_1_erg_s": population_lbol[primary],
+        "lbol_2_erg_s": population_lbol[secondary],
+        "lhx_1_erg_s": population_lhx[primary],
+        "lhx_2_erg_s": population_lhx[secondary],
+        "eddington_ratio_1": population_lbol[primary]
         / (eddington_coefficient * primary_mass),
-        "eddington_ratio_2": np.asarray(secondary_record["Lbol"], dtype=np.float64)
+        "eddington_ratio_2": population_lbol[secondary]
         / (eddington_coefficient * secondary_mass),
         "active_1": active_primary,
         "active_2": active_secondary,
@@ -696,6 +858,85 @@ def redshift_rate_model(
     z = np.asarray(redshift, dtype=np.float64)
     scaled = np.maximum(z / z_star, np.finfo(float).tiny)
     return phi_star * np.exp(-(scaled**beta)) * scaled**alpha
+
+
+def locally_weighted_logarithmic_trend(
+    redshift: np.ndarray,
+    value: np.ndarray,
+    evaluation_redshift: np.ndarray,
+    value_error: np.ndarray | None = None,
+    *,
+    neighbor_count: int = 5,
+    degree: int = 2,
+) -> np.ndarray:
+    """Fit a local polynomial in ``log(1 + z)`` and logarithmic value.
+
+    A separate weighted polynomial is evaluated at every requested redshift.
+    Tricube distance weights confine each fit to the nearest snapshots.  When
+    supplied, positive measurement errors provide inverse-variance weights in
+    logarithmic value.  Non-positive measurements are omitted because the fit
+    is performed in logarithmic space.
+    """
+
+    z = np.asarray(redshift, dtype=np.float64)
+    y = np.asarray(value, dtype=np.float64)
+    target_z = np.asarray(evaluation_redshift, dtype=np.float64)
+    if z.shape != y.shape or z.ndim != 1:
+        raise ValueError("redshift and value must be matching one-dimensional arrays")
+    if target_z.ndim != 1 or np.any(~np.isfinite(target_z)) or np.any(target_z < 0.0):
+        raise ValueError("evaluation_redshift must be finite and non-negative")
+    if degree < 0:
+        raise ValueError("degree must be non-negative")
+    if neighbor_count < degree + 2:
+        raise ValueError("neighbor_count must exceed the polynomial degree by at least one")
+
+    selected = np.isfinite(z) & np.isfinite(y) & (z >= 0.0) & (y > 0.0)
+    logarithmic_error: np.ndarray | None = None
+    if value_error is not None:
+        error = np.asarray(value_error, dtype=np.float64)
+        if error.shape != y.shape:
+            raise ValueError("value_error must match value")
+        selected &= np.isfinite(error) & (error > 0.0)
+        logarithmic_error = error[selected] / y[selected]
+    x = np.log1p(z[selected])
+    logarithmic_value = np.log(y[selected])
+    if x.size < degree + 2:
+        return np.full(target_z.size, np.nan)
+
+    retained_neighbor_count = min(neighbor_count, x.size)
+    result = np.full(target_z.size, np.nan)
+    for index, target in enumerate(np.log1p(target_z)):
+        distance = np.abs(x - target)
+        neighbor = np.argpartition(distance, retained_neighbor_count - 1)[
+            :retained_neighbor_count
+        ]
+        local_distance = distance[neighbor]
+        bandwidth = float(np.max(local_distance))
+        if bandwidth == 0.0:
+            result[index] = float(np.exp(np.mean(logarithmic_value[neighbor])))
+            continue
+        scaled_distance = np.minimum(local_distance / bandwidth, 1.0)
+        weight = (1.0 - scaled_distance**3) ** 3
+        if logarithmic_error is not None:
+            weight /= logarithmic_error[neighbor] ** 2
+        positive_weight = weight > 0.0
+        if np.count_nonzero(positive_weight) < degree + 1:
+            positive_weight = np.ones(weight.size, dtype=bool)
+            weight = np.ones(weight.size)
+            if logarithmic_error is not None:
+                weight /= logarithmic_error[neighbor] ** 2
+        centered = x[neighbor][positive_weight] - target
+        design = np.column_stack(
+            [centered**power for power in range(degree + 1)]
+        )
+        square_root_weight = np.sqrt(weight[positive_weight])
+        coefficient, *_ = np.linalg.lstsq(
+            design * square_root_weight[:, None],
+            logarithmic_value[neighbor][positive_weight] * square_root_weight,
+            rcond=None,
+        )
+        result[index] = float(np.exp(coefficient[0]))
+    return result
 
 
 def fit_redshift_rate(
