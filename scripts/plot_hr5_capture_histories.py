@@ -17,7 +17,7 @@ import matplotlib.patheffects as path_effects
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.cosmology import FlatLambdaCDM
-from matplotlib.colors import LogNorm, Normalize
+from matplotlib.colors import Normalize
 from matplotlib.lines import Line2D
 from matplotlib.ticker import MaxNLocator
 
@@ -46,6 +46,8 @@ BOX_SIZE_CMPC = 1048.5
 MAJOR_MASS_RATIO = 0.1
 TRACK_RADIUS_PKPC = 50.0
 TRACK_WINDOW_GYR = 1.0
+MASS_SCALE_LOG_MIN = 4.0
+MASS_SCALE_LOG_MAX = 10.0
 
 
 def _plot_settings() -> None:
@@ -262,6 +264,17 @@ def _cosmic_time_transform(
     return time_to_redshift, redshift_to_time
 
 
+def _mass_marker_area(mass_msun: float | np.ndarray) -> float | np.ndarray:
+    logarithmic_mass = np.log10(np.maximum(mass_msun, 10.0**MASS_SCALE_LOG_MIN))
+    normalized_mass = np.clip(
+        (logarithmic_mass - MASS_SCALE_LOG_MIN)
+        / (MASS_SCALE_LOG_MAX - MASS_SCALE_LOG_MIN),
+        0.0,
+        1.0,
+    )
+    return 10.0 + 70.0 * normalized_mass
+
+
 def _plot_capture_tree(
     output: Path,
     root_id: int,
@@ -276,12 +289,26 @@ def _plot_capture_tree(
 ) -> dict[str, float | int]:
     positions, _ = _tree_positions(root_id, rows, catalog)
     row_for_child = {int(catalog["sink_id"][row]): row for row in rows}
-    norm = LogNorm(vmin=1.0e4, vmax=max(root_mass_msun, 1.0e5))
-    color_map = plt.get_cmap("cividis")
-    minor_color = "#A9A9A9"
-    figure, axis = plt.subplots(figsize=(7.15, 5.1))
+    major_color = "#26456E"
+    minor_color = "#B5B5B5"
+    figure = plt.figure(figsize=(7.15, 5.1))
+    grid = figure.add_gridspec(
+        1,
+        2,
+        width_ratios=(0.91, 0.09),
+        left=0.075,
+        right=0.94,
+        bottom=0.09,
+        top=0.88,
+        wspace=0.28,
+    )
+    axis = figure.add_subplot(grid[0, 0])
+    mass_axis = figure.add_subplot(grid[0, 1])
     lower_time = float(np.interp(maximum_redshift, redshift[::-1], cosmic_time[::-1]))
     final_time = float(cosmic_time[-1])
+    branch_color: dict[int, str] = {}
+    branch_alpha: dict[int, float] = {}
+    mass_markers: dict[tuple[int, int], float] = {}
 
     for node in sorted(nodes):
         state = np.asarray(records[node]["state"][: redshift.size], dtype=np.float64)
@@ -291,7 +318,6 @@ def _plot_capture_tree(
         begin = max(lower_time, float(cosmic_time[active[0]]))
         if node == root_id:
             end = final_time
-            mass = root_mass_msun
             color = "#D55E00"
             alpha = 1.0
             width = 2.7
@@ -303,10 +329,12 @@ def _plot_capture_tree(
             mass = float(catalog["minor_mass_last_resolved_msun"][row])
             parent_mass = float(catalog["receiver_mass_last_resolved_msun"][row])
             mass_ratio = min(mass, parent_mass) / max(mass, parent_mass)
-            color = color_map(norm(max(mass, 1.0e4))) if mass_ratio >= MAJOR_MASS_RATIO else minor_color
+            color = major_color if mass_ratio >= MAJOR_MASS_RATIO else minor_color
             alpha = 0.9 if mass_ratio >= MAJOR_MASS_RATIO else 0.28
             width = 0.65 + 1.35 * np.sqrt(min(1.0, mass_ratio))
             zorder = 7 if mass_ratio >= MAJOR_MASS_RATIO else 2
+        branch_color[node] = color
+        branch_alpha[node] = alpha
         if end >= lower_time:
             axis.plot(
                 [positions[node], positions[node]],
@@ -317,6 +345,13 @@ def _plot_capture_tree(
                 solid_capstyle="round",
                 zorder=zorder,
             )
+        birth_index = int(active[0])
+        if cosmic_time[birth_index] >= lower_time:
+            mass_markers[(node, birth_index)] = float(state[birth_index, 0])
+        if node != root_id:
+            last_index = int(catalog["last_resolved_history_index"][row_for_child[node]])
+            if cosmic_time[last_index] >= lower_time:
+                mass_markers[(node, last_index)] = float(state[last_index, 0])
 
     major_count = 0
     for row in rows:
@@ -333,7 +368,7 @@ def _plot_capture_tree(
         mass_ratio = min(child_mass, parent_mass) / max(child_mass, parent_mass)
         major = mass_ratio >= MAJOR_MASS_RATIO
         major_count += int(major)
-        color = color_map(norm(max(child_mass, 1.0e4))) if major else minor_color
+        color = major_color if major else minor_color
         alpha = 0.9 if major else 0.28
         width = 0.65 + 1.35 * np.sqrt(min(1.0, mass_ratio))
         axis.plot(
@@ -345,14 +380,18 @@ def _plot_capture_tree(
             alpha=alpha,
             zorder=8 if major else 3,
         )
+        parent_state = np.asarray(records[parent]["state"][: redshift.size])
+        mass_markers[(parent, capture_index)] = float(parent_state[capture_index, 0])
+
+    for (node, state_index), mass_msun in mass_markers.items():
         axis.scatter(
-            [positions[parent]],
-            [upper],
-            s=7.0 + 24.0 * np.sqrt(min(1.0, mass_ratio)),
+            [positions[node]],
+            [cosmic_time[state_index]],
+            s=_mass_marker_area(mass_msun),
             facecolor="white",
-            edgecolor=color,
-            linewidth=0.6,
-            alpha=max(alpha, 0.45),
+            edgecolor=branch_color[node],
+            linewidth=0.75,
+            alpha=max(branch_alpha[node], 0.48),
             zorder=12,
         )
 
@@ -369,30 +408,53 @@ def _plot_capture_tree(
     )
     redshift_axis.set_ylabel("redshift")
     redshift_axis.set_yticks((6.0, 4.0, 3.0, 2.0, 1.0, float(redshift[-1])))
+    position_span = max(positions.values()) - min(positions.values())
     axis.text(
-        positions[root_id],
+        positions[root_id] - 0.015 * position_span,
         final_time - 0.015 * (final_time - lower_time),
         rf"ID {root_id}",
         color="#D55E00",
-        ha="center",
+        ha="right",
         va="top",
         fontsize=7.0,
         fontweight="bold",
     )
     legend = (
         Line2D([0], [0], color="#D55E00", lw=2.7, label="main branch"),
-        Line2D([0], [0], color="#4C6B72", lw=1.5, label=rf"$q\geq{MAJOR_MASS_RATIO:g}$"),
+        Line2D([0], [0], color=major_color, lw=1.5, label=rf"$q\geq{MAJOR_MASS_RATIO:g}$"),
         Line2D([0], [0], color=minor_color, lw=1.2, alpha=0.55, label=rf"$q<{MAJOR_MASS_RATIO:g}$"),
         Line2D([0], [0], color="#555555", lw=1.0, ls=(0, (2.0, 1.4)), label="assigned capture interval"),
     )
-    axis.legend(handles=legend, frameon=False, loc="upper left", ncol=2)
-    colorbar = figure.colorbar(
-        plt.cm.ScalarMappable(norm=norm, cmap=color_map),
-        ax=axis,
-        pad=0.08,
-        fraction=0.028,
+    figure.legend(
+        handles=legend,
+        frameon=False,
+        loc="upper center",
+        bbox_to_anchor=(0.48, 0.985),
+        ncol=4,
+        columnspacing=1.5,
+        handletextpad=0.7,
     )
-    colorbar.set_label(r"mass of removed SMBH [$M_\odot$]")
+    scale_log_mass = np.array((4.0, 6.0, 8.0, 10.0))
+    mass_axis.scatter(
+        np.full(scale_log_mass.size, 0.42),
+        scale_log_mass,
+        s=_mass_marker_area(10.0**scale_log_mass),
+        facecolor="white",
+        edgecolor="#4A4A4A",
+        linewidth=0.75,
+        clip_on=False,
+    )
+    mass_axis.set_xlim(0.0, 1.0)
+    mass_axis.set_ylim(MASS_SCALE_LOG_MIN - 0.6, MASS_SCALE_LOG_MAX + 0.6)
+    mass_axis.set_xticks([])
+    mass_axis.set_yticks(scale_log_mass)
+    mass_axis.set_yticklabels(tuple(rf"$10^{{{int(value)}}}$" for value in scale_log_mass))
+    mass_axis.yaxis.tick_right()
+    mass_axis.yaxis.set_label_position("right")
+    mass_axis.set_ylabel(r"SMBH mass [$M_\odot$]", labelpad=7.0)
+    mass_axis.tick_params(axis="y", which="major", length=0, pad=3.0)
+    for spine in mass_axis.spines.values():
+        spine.set_visible(False)
     output.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(output, bbox_inches="tight", pad_inches=0.04)
     plt.close(figure)
@@ -402,6 +464,7 @@ def _plot_capture_tree(
         "node_count": len(nodes),
         "assigned_capture_count": len(rows),
         "major_capture_count": major_count,
+        "mass_marker_count": len(mass_markers),
         "maximum_redshift_shown": maximum_redshift,
     }
 

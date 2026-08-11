@@ -118,6 +118,12 @@ of each relative path within 50 pkpc and during the preceding 1 Gyr. The dual
 classification applies only at output 117. The assigned links do not verify
 the physical capture partner and do not establish SMBH coalescence.
 
+In the hierarchy, open-circle area scales linearly with the logarithm of the
+recorded SMBH mass. Circles mark formation after $z=7$, the final resolved
+output before numerical removal, and the surviving SMBH in the next output
+after an assigned capture. Repeated captures at one output share a single
+mass marker for the surviving SMBH.
+
 The regenerated seed-rate peak, massive-SMBH captured-mass fraction, and
 fixed-delay rate normalization satisfy the reported or visually readable
 benchmarks. The legacy cumulative count for the $10^{6}\,M_\odot$ chirp-mass
