@@ -52,6 +52,7 @@ MASS_SCALE_LOG_MIN = 4.0
 MASS_SCALE_LOG_MAX = 10.0
 MASS_MARKER_AREA_MIN = 7.0
 MASS_MARKER_AREA_MAX = 210.0
+TRAJECTORY_MARKER_AREA_RANGE_FACTOR = 0.5
 
 
 def _plot_settings() -> None:
@@ -262,6 +263,14 @@ def _mass_marker_area(mass_msun: float | np.ndarray) -> float | np.ndarray:
     return MASS_MARKER_AREA_MIN + (
         MASS_MARKER_AREA_MAX - MASS_MARKER_AREA_MIN
     ) * normalized_mass
+
+
+def _trajectory_mass_marker_area(
+    mass_msun: float | np.ndarray,
+) -> float | np.ndarray:
+    return MASS_MARKER_AREA_MIN + TRAJECTORY_MARKER_AREA_RANGE_FACTOR * (
+        _mass_marker_area(mass_msun) - MASS_MARKER_AREA_MIN
+    )
 
 
 def _plot_capture_tree(
@@ -637,6 +646,7 @@ def _plot_dual_trajectory(
     figure = plt.figure(figsize=(7.15, 5.1))
     axis = figure.add_subplot(1, 1, 1, projection="3d")
     _style_3d_axis(axis)
+    axis.computed_zorder = False
     axis.view_init(elev=12.5, azim=-52.0)
     axis.zaxis._axinfo["juggled"] = (1, 2, 0)
 
@@ -682,7 +692,7 @@ def _plot_dual_trajectory(
             position[:, 0],
             position[:, 1],
             position[:, 2],
-            s=_mass_marker_area(mass),
+            s=_trajectory_mass_marker_area(mass),
             c=track_redshift,
             cmap=color_map,
             norm=redshift_norm,
@@ -709,14 +719,14 @@ def _plot_dual_trajectory(
         [0.0],
         [0.0],
         marker="*",
-        s=_mass_marker_area(float(root["mass_msun"])),
+        s=_trajectory_mass_marker_area(float(root["mass_msun"])),
         color=selection_color,
         edgecolor="#D55E00", linewidth=1.5, depthshade=False, zorder=35,
     )
     axis.scatter(
         [selection_relative[0]], [selection_relative[1]], [selection_relative[2]],
         marker="D",
-        s=_mass_marker_area(float(root["companion_mass_msun"])),
+        s=_trajectory_mass_marker_area(float(root["companion_mass_msun"])),
         color=selection_color,
         edgecolor="#CC79A7",
         linewidth=1.4,
@@ -759,7 +769,7 @@ def _plot_dual_trajectory(
             color="none",
             markerfacecolor="#888888",
             markeredgecolor="#4A4A4A",
-            markersize=float(np.sqrt(_mass_marker_area(value))),
+            markersize=float(np.sqrt(_trajectory_mass_marker_area(value))),
             label=rf"$10^{{{int(np.log10(value))}}}$",
         )
         for value in mass_legend_values
@@ -834,6 +844,7 @@ def _plot_dual_trajectory(
         "track_window_gyr": TRACK_WINDOW_GYR,
         "display_half_span_pkpc": display_half_span,
         "display_panel_zoom": 1.15,
+        "trajectory_marker_area_range_factor": TRAJECTORY_MARKER_AREA_RANGE_FACTOR,
     }
 
 
