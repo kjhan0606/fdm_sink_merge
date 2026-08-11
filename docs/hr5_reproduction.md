@@ -79,6 +79,7 @@ python scripts/extract_hr5_capture_catalog.py \
 python scripts/reproduce_hr5_original_figures.py --rebuild-cache
 python scripts/validate_hr5_capture_receivers.py
 python scripts/analyze_hr5_dual_agn.py
+python scripts/plot_hr5_capture_histories.py
 ```
 
 The full tree can also be rebuilt from consecutive MkAGN snapshots with
@@ -103,6 +104,19 @@ distribution to `hr5_capture_population.pdf`. The lower horizontal axes use
 two-dimensional counts use equal intervals in `log10(1 + z_cap)`. The
 mass-ratio probability density is written separately to
 `hr5_capture_mass_ratio.pdf`.
+
+`scripts/plot_hr5_capture_histories.py` writes two diagnostic figures under
+`results/hr5/capture_histories/`. The first traces the hierarchy assigned to
+SMBH 11799, which is the most massive SMBH at the final HR5 output. The
+hierarchy contains 121 sink particles and 120 assigned links. Twenty-eight
+removed SMBHs are assigned directly to SMBH 11799, and the deepest branch has
+four links. The second figure follows SMBH 33570, the most massive member of
+the dual-AGN sample at output 117, together with the 16 removed SMBHs assigned
+directly to it. Its first panel shows the unwrapped comoving path relative to
+the position at selection. Its second panel shows the final continuous portion
+of each relative path within 50 pkpc and during the preceding 1 Gyr. The dual
+classification applies only at output 117. The assigned links do not verify
+the physical capture partner and do not establish SMBH coalescence.
 
 The regenerated seed-rate peak, massive-SMBH captured-mass fraction, and
 fixed-delay rate normalization satisfy the reported or visually readable

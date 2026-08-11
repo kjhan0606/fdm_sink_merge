@@ -36,7 +36,7 @@ def _add_redshift_axis(axis: plt.Axes) -> None:
         "top",
         functions=(_coordinate_to_redshift, _redshift_to_coordinate),
     )
-    redshift_axis.set_xlabel(r"redshift $z_{\rm cap}$", labelpad=2.0)
+    redshift_axis.set_xlabel(r"$z_{\rm cap}$", labelpad=2.0)
     redshift_axis.set_xticks(REDSHIFT_TICKS)
     redshift_axis.minorticks_off()
     redshift_axis.tick_params(axis="x", direction="in", pad=2.0)
