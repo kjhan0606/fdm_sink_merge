@@ -817,7 +817,7 @@ def _plot_dual_trajectory(
         shrink=0.74,
     )
     colorbar.set_label("redshift")
-    figure.subplots_adjust(left=0.02, right=0.84, bottom=0.03, top=0.82)
+    figure.subplots_adjust(left=0.02, right=0.84, bottom=0.03, top=0.895)
     output.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(output, bbox_inches="tight", pad_inches=0.09)
     plt.close(figure)
