@@ -24,6 +24,7 @@ from fdm_smbh_delay.hr5 import (
     infer_capture_receivers,
     interval_censored_cumulative_bounds,
     classify_sink_pair_hosts,
+    locally_weighted_logarithmic_fit,
     locally_weighted_logarithmic_trend,
     lookup_sink_hosts,
     match_population_by_properties,
@@ -67,6 +68,19 @@ def test_local_logarithmic_trend_recovers_power_law_in_one_plus_redshift() -> No
     )
     expected = 3.0e-6 * (1.0 + evaluation) ** 2.5
     assert fitted == pytest.approx(expected, rel=1.0e-10)
+
+
+def test_local_logarithmic_fit_returns_centered_coefficients() -> None:
+    redshift = np.linspace(0.2, 8.0, 20)
+    value = 3.0e-6 * (1.0 + redshift) ** 2.5
+    evaluation = np.array([0.7, 2.0, 6.0])
+    fitted, coefficient, bandwidth = locally_weighted_logarithmic_fit(
+        redshift, value, evaluation, neighbor_count=7, degree=2
+    )
+    assert fitted == pytest.approx(3.0e-6 * (1.0 + evaluation) ** 2.5)
+    assert coefficient[:, 0] == pytest.approx(np.log(fitted))
+    assert coefficient[:, 1] == pytest.approx(2.5 * bandwidth, abs=1.0e-11)
+    assert coefficient[:, 2] == pytest.approx(np.zeros(3), abs=1.0e-11)
 
 
 def test_local_logarithmic_trend_omits_zero_measurements() -> None:
@@ -377,7 +391,9 @@ def test_spatial_jackknife_returns_finite_pair_uncertainties() -> None:
         region_count=4,
     )
     assert statistics["number_density"] == pytest.approx(0.05)
+    assert statistics["active_number_density"] == pytest.approx(0.1)
     assert statistics["pair_fraction"] == pytest.approx(0.5)
+    assert np.isfinite(statistics["active_number_density_jackknife_error"])
     assert np.isfinite(statistics["number_density_jackknife_error"])
     assert np.isfinite(statistics["pair_fraction_jackknife_error"])
 

@@ -18,6 +18,7 @@ import numpy as np
 
 from fdm_smbh_delay.hr5 import (
     find_agn_pair_population,
+    locally_weighted_logarithmic_fit,
     locally_weighted_logarithmic_trend,
     pair_component_multiplicity,
     read_mkagn_snapshot,
@@ -79,6 +80,12 @@ def _selection_statistics(
     pure_member_count = int(np.count_nonzero(multiplicity == 2))
     return {
         "active_agn_count": active_count,
+        "active_smbh_number_density_cmpc3": float(
+            spatial["active_number_density"]
+        ),
+        "active_smbh_number_density_jackknife_error_cmpc3": float(
+            spatial["active_number_density_jackknife_error"]
+        ),
         "dual_pair_count": pair_count,
         "dual_pair_number_density_cmpc3": float(spatial["number_density"]),
         "dual_pair_number_density_jackknife_error_cmpc3": float(
@@ -162,6 +169,14 @@ def _make_fits(
     )
     fits: dict[tuple[str, str], np.ndarray] = {}
     for selection in LABELS:
+        fits[(selection, "active_density")] = _fit_one_quantity(
+            rows,
+            selection,
+            "active_smbh_number_density_cmpc3",
+            "active_smbh_number_density_jackknife_error_cmpc3",
+            evaluation_redshift,
+            neighbor_count,
+        )
         fits[(selection, "density")] = _fit_one_quantity(
             rows,
             selection,
@@ -204,6 +219,7 @@ def _write_fits(
             (
                 "redshift",
                 "selection",
+                "active_smbh_number_density_fit_cmpc3",
                 "dual_pair_number_density_fit_cmpc3",
                 "dual_pair_fraction_fit",
                 "dual_member_fraction_fit",
@@ -221,12 +237,56 @@ def _write_fits(
             )
             for values in zip(
                 evaluation_redshift,
+                fits[(selection, "active_density")],
                 fits[(selection, "density")],
                 fits[(selection, "pair_fraction")],
                 member,
                 pure_member,
             ):
                 writer.writerow((values[0], selection, *values[1:]))
+
+
+def _local_parameter_rows(
+    rows: list[dict[str, object]], neighbor_count: int
+) -> list[dict[str, object]]:
+    selected = [
+        row
+        for row in rows
+        if row["selection"] == "bol43" and row["dual_pair_count"] >= 3
+    ]
+    redshift = np.asarray([row["redshift"] for row in selected], dtype=np.float64)
+    parameter_rows: list[dict[str, object]] = []
+    for population, value_field in (
+        ("active_smbh", "active_smbh_number_density_cmpc3"),
+        ("dual_agn", "dual_pair_number_density_cmpc3"),
+    ):
+        value = np.asarray([row[value_field] for row in selected], dtype=np.float64)
+        fitted, coefficients, bandwidth = locally_weighted_logarithmic_fit(
+            redshift,
+            value,
+            redshift,
+            None,
+            neighbor_count=neighbor_count,
+            degree=2,
+        )
+        for row, fit_value, coefficient, local_bandwidth in zip(
+            selected, fitted, coefficients, bandwidth, strict=True
+        ):
+            parameter_rows.append(
+                {
+                    "output_number": row["output_number"],
+                    "redshift": row["redshift"],
+                    "population": population,
+                    "measured_number_density_cmpc3": row[value_field],
+                    "fitted_number_density_cmpc3": fit_value,
+                    "coefficient_a": coefficient[0],
+                    "coefficient_b": coefficient[1],
+                    "coefficient_c": coefficient[2],
+                    "bandwidth_ln_1_plus_z": local_bandwidth,
+                    "neighbor_count": neighbor_count,
+                }
+            )
+    return parameter_rows
 
 
 def _plot(
@@ -399,8 +459,12 @@ def analyze(
     output_directory.mkdir(parents=True, exist_ok=True)
     measurement_path = output_directory / "hr5_dual_agn_redshift_evolution.csv"
     fit_path = output_directory / "hr5_dual_agn_redshift_local_fits.csv"
+    parameter_path = (
+        output_directory / "hr5_dual_agn_redshift_local_fit_parameters.csv"
+    )
     _write_measurements(measurement_path, rows)
     _write_fits(fit_path, evaluation_redshift, fits)
+    _write_measurements(parameter_path, _local_parameter_rows(rows, neighbor_count))
     _plot(
         output_directory / "hr5_dual_agn_redshift_evolution.pdf",
         rows,
@@ -427,6 +491,8 @@ def analyze(
         "local_fit": {
             "coordinate": "log(1 + redshift)",
             "quantity": "natural logarithm of the measured abundance",
+            "centered_function": "ln n_X(z) = a_X(z0) + b_X(z0) u + c_X(z0) u^2; u = ln[(1+z)/(1+z0)] / h(z0)",
+            "coefficient_table": str(parameter_path),
             "polynomial_degree": 2,
             "neighbor_count": neighbor_count,
             "distance_weight": "tricube",

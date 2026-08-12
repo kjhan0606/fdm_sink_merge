@@ -891,6 +891,7 @@ def spatial_jackknife_pair_statistics(
     total_active = int(active_x.size)
     total_pair = int(np.count_nonzero(selected))
     retained_volume = volume_cmpc3 * (region_count - 1.0) / region_count
+    active_density_sample = (total_active - active_count_by_region) / retained_volume
     density_sample = (total_pair - pair_count_by_region) / retained_volume
     retained_active = total_active - active_count_by_region
     fraction_sample = np.divide(
@@ -910,6 +911,8 @@ def spatial_jackknife_pair_statistics(
 
     return {
         "region_count": int(region_count),
+        "active_number_density": total_active / volume_cmpc3,
+        "active_number_density_jackknife_error": error(active_density_sample),
         "number_density": total_pair / volume_cmpc3,
         "number_density_jackknife_error": error(density_sample),
         "pair_fraction": total_pair / total_active if total_active else float("nan"),
@@ -939,7 +942,7 @@ def project_pair_observables(
     dimensionless_hubble: float,
     hubble_kms_mpc: float,
     box_size_cmpc_over_h: float = 717.229040,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Project physical pairs and include Hubble flow in line-of-sight velocity."""
 
     position_1 = np.asarray(position_1_cmpc_over_h, dtype=np.float64)
@@ -979,7 +982,7 @@ def interval_censored_cumulative_bounds(
     event_upper_gyr: np.ndarray,
     time_grid_gyr: np.ndarray,
     followup_gyr: float,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Bound cumulative incidence for interval events and common right censoring."""
 
     lower = np.asarray(event_lower_gyr, dtype=np.float64)
@@ -1015,7 +1018,7 @@ def redshift_rate_model(
     return phi_star * np.exp(-(scaled**beta)) * scaled**alpha
 
 
-def locally_weighted_logarithmic_trend(
+def locally_weighted_logarithmic_fit(
     redshift: np.ndarray,
     value: np.ndarray,
     evaluation_redshift: np.ndarray,
@@ -1023,14 +1026,17 @@ def locally_weighted_logarithmic_trend(
     *,
     neighbor_count: int = 5,
     degree: int = 2,
-) -> np.ndarray:
-    """Fit a local polynomial in ``log(1 + z)`` and logarithmic value.
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fit local polynomials in ``log(1 + z)`` and logarithmic value.
 
     A separate weighted polynomial is evaluated at every requested redshift.
     Tricube distance weights confine each fit to the nearest snapshots.  When
     supplied, positive measurement errors provide inverse-variance weights in
-    logarithmic value.  Non-positive measurements are omitted because the fit
-    is performed in logarithmic space.
+    logarithmic value. Non-positive measurements are omitted because the fit
+    is performed in logarithmic space. The local coordinate divides the
+    displacement from each evaluation point by the tricube bandwidth. The
+    returned coefficient columns give the constant, linear, and higher-order
+    terms in the normalized local coordinate, followed by the bandwidths.
     """
 
     z = np.asarray(redshift, dtype=np.float64)
@@ -1056,10 +1062,16 @@ def locally_weighted_logarithmic_trend(
     x = np.log1p(z[selected])
     logarithmic_value = np.log(y[selected])
     if x.size < degree + 2:
-        return np.full(target_z.size, np.nan)
+        return (
+            np.full(target_z.size, np.nan),
+            np.full((target_z.size, degree + 1), np.nan),
+            np.full(target_z.size, np.nan),
+        )
 
     retained_neighbor_count = min(neighbor_count, x.size)
     result = np.full(target_z.size, np.nan)
+    coefficients = np.full((target_z.size, degree + 1), np.nan)
+    bandwidths = np.full(target_z.size, np.nan)
     for index, target in enumerate(np.log1p(target_z)):
         distance = np.abs(x - target)
         neighbor = np.argpartition(distance, retained_neighbor_count - 1)[
@@ -1067,8 +1079,11 @@ def locally_weighted_logarithmic_trend(
         ]
         local_distance = distance[neighbor]
         bandwidth = float(np.max(local_distance))
+        bandwidths[index] = bandwidth
         if bandwidth == 0.0:
-            result[index] = float(np.exp(np.mean(logarithmic_value[neighbor])))
+            coefficients[index, 0] = float(np.mean(logarithmic_value[neighbor]))
+            coefficients[index, 1:] = 0.0
+            result[index] = float(np.exp(coefficients[index, 0]))
             continue
         scaled_distance = np.minimum(local_distance / bandwidth, 1.0)
         weight = (1.0 - scaled_distance**3) ** 3
@@ -1080,7 +1095,7 @@ def locally_weighted_logarithmic_trend(
             weight = np.ones(weight.size)
             if logarithmic_error is not None:
                 weight /= logarithmic_error[neighbor] ** 2
-        centered = x[neighbor][positive_weight] - target
+        centered = (x[neighbor][positive_weight] - target) / bandwidth
         design = np.column_stack(
             [centered**power for power in range(degree + 1)]
         )
@@ -1090,7 +1105,30 @@ def locally_weighted_logarithmic_trend(
             logarithmic_value[neighbor][positive_weight] * square_root_weight,
             rcond=None,
         )
+        coefficients[index] = coefficient
         result[index] = float(np.exp(coefficient[0]))
+    return result, coefficients, bandwidths
+
+
+def locally_weighted_logarithmic_trend(
+    redshift: np.ndarray,
+    value: np.ndarray,
+    evaluation_redshift: np.ndarray,
+    value_error: np.ndarray | None = None,
+    *,
+    neighbor_count: int = 5,
+    degree: int = 2,
+) -> np.ndarray:
+    """Evaluate a local polynomial in ``log(1 + z)`` and logarithmic value."""
+
+    result, _, _ = locally_weighted_logarithmic_fit(
+        redshift,
+        value,
+        evaluation_redshift,
+        value_error,
+        neighbor_count=neighbor_count,
+        degree=degree,
+    )
     return result
 
 

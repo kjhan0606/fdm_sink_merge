@@ -555,9 +555,27 @@ def _plot_demographics(
             redshift_fits = list(csv.DictReader(stream))
 
     selections = (
-        ("bol43", r"$L_{\rm bol}\geq10^{43}$", "-", COLORS[0], MARKERS[0]),
-        ("bol44", r"$L_{\rm bol}\geq10^{44}$", "--", COLORS[1], MARKERS[1]),
-        ("hx42", r"$L_{2-10\,{\rm keV}}\geq10^{42}$", ":", COLORS[2], MARKERS[2]),
+        (
+            "bol43",
+            r"$L_{\rm bol}\geq10^{43}\,{\rm erg\,s^{-1}}$",
+            "-",
+            COLORS[0],
+            MARKERS[0],
+        ),
+        (
+            "bol44",
+            r"$L_{\rm bol}\geq10^{44}\,{\rm erg\,s^{-1}}$",
+            "--",
+            COLORS[1],
+            MARKERS[1],
+        ),
+        (
+            "hx42",
+            r"$L_{2-10\,{\rm keV}}\geq10^{42}\,{\rm erg\,s^{-1}}$",
+            ":",
+            COLORS[2],
+            MARKERS[2],
+        ),
     )
     for key, label, line_style, color, marker in selections:
         if redshift_measurements:

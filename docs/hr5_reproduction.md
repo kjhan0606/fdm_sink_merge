@@ -200,10 +200,15 @@ The measured number density reaches `6.430e-4 cMpc^-3` at redshift 3.394 and
 decreases to `3.588e-6 cMpc^-3` at redshift 0.625. The files
 `hr5_dual_agn_redshift_evolution.csv` and
 `hr5_dual_agn_redshift_local_fits.csv` contain the direct measurements and the
-displayed local fits. Each fit relates logarithmic abundance to `log(1 + z)`
-with a quadratic model and tricube distance weights. The model at each plotted
-redshift uses the seven nearest outputs with at least three dual AGN
-candidates. Zero-count outputs are shown as 95 percent Poisson upper limits.
+displayed local fits. The file
+`hr5_dual_agn_redshift_local_fit_parameters.csv` gives the local coefficients
+for the active-SMBH and dual-AGN number densities. At each target redshift
+`z0`, the fit is
+`ln[n_X(z)/(1 cMpc^-3)] = a_X(z0) + b_X(z0) u + c_X(z0) u^2`, where
+`u = ln[(1 + z)/(1 + z0)] / h(z0)`. The bandwidth is the greatest distance in
+`ln(1 + z)` among the seven nearest outputs with at least three dual AGN
+candidates. Tricube distance weights define each local fit. Zero-count outputs
+are shown as 95 percent Poisson upper limits.
 
 | redshift | active AGN | dual pairs | number density [cMpc^-3] | pair/AGN | member/AGN | pure member/AGN |
 |---:|---:|---:|---:|---:|---:|---:|
