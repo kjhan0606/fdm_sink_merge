@@ -1080,7 +1080,7 @@ def _plot_precursors(
         color=COLORS[3],
         lw=3.2,
         alpha=0.35,
-        label="censoring bounds",
+        label="output-spacing bounds",
     )
     axes[3].errorbar(
         matched_redshift,
