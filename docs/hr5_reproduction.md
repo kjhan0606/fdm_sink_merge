@@ -101,12 +101,15 @@ values with numerical statements in the draft. The original point series are
 not available in a machine-readable table, so an exact pointwise residual
 cannot be claimed.
 
-`scripts/plot_hr5_capture_population.py` writes the capture-rate and chirp-mass
-distribution to `hr5_capture_population.pdf`. The lower horizontal axes use
+`scripts/plot_hr5_capture_population.py` writes the capture-rate and the
+distribution of the directly recorded mass of the removed SMBH to
+`hr5_capture_population.pdf`. The lower horizontal axes use
 `log10(1 + z_cap)`, and the upper axes give the corresponding redshift. The
 two-dimensional counts use equal intervals in `log10(1 + z_cap)`. The
 mass-ratio probability density is written separately to
-`hr5_capture_mass_ratio.pdf`.
+`hr5_capture_mass_ratio.pdf`. The four curves use thresholds in the mass of the
+removed SMBH rather than chirp mass because the surviving companion is assigned
+by the analysis.
 
 `scripts/plot_hr5_capture_histories.py` writes two diagnostic figures under
 `results/hr5/capture_histories/`. The first traces the hierarchy assigned to

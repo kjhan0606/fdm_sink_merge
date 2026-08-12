@@ -77,17 +77,19 @@ def _read_events(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.nda
         "assigned_capture_output",
         "assigned_capture_redshift",
         "mass_ratio_last_resolved",
-        "chirp_mass_last_resolved_msun",
+        "minor_mass_last_resolved_msun",
     )
     missing = sorted(set(requested) - set(header))
     if missing:
         raise ValueError(f"The HR5 capture catalog is missing columns: {missing}")
-    data = np.loadtxt(
-        path,
-        delimiter=",",
-        skiprows=1,
-        usecols=tuple(header.index(name) for name in requested),
-        dtype=np.float64,
+    data = np.atleast_2d(
+        np.loadtxt(
+            path,
+            delimiter=",",
+            skiprows=1,
+            usecols=tuple(header.index(name) for name in requested),
+            dtype=np.float64,
+        )
     )
     return data[:, 0].astype(np.int64), data[:, 1], data[:, 2], data[:, 3]
 
@@ -100,15 +102,16 @@ def make_figure(
     mass_ratio_output: Path | None = None,
 ) -> None:
     history = _read_history(history_path)
-    event_output, event_redshift, mass_ratio, chirp_mass = _read_events(catalog_path)
-    valid = np.isfinite(chirp_mass) & np.isfinite(mass_ratio) & (chirp_mass > 0.0)
-    event_output = event_output[valid]
-    event_redshift = event_redshift[valid]
-    mass_ratio = mass_ratio[valid]
-    chirp_mass = chirp_mass[valid]
+    event_output, event_redshift, mass_ratio, removed_mass = _read_events(
+        catalog_path
+    )
+    valid_mass = np.isfinite(removed_mass) & (removed_mass > 0.0)
+    rate_output = event_output[valid_mass]
+    rate_redshift = event_redshift[valid_mass]
+    rate_mass = removed_mass[valid_mass]
 
     output_number = history["output_number"]
-    event_index = np.searchsorted(output_number, event_output)
+    event_index = np.searchsorted(output_number, rate_output)
     interval_gyr = history["interval_gyr"]
     redshift = history["redshift"]
 
@@ -133,7 +136,7 @@ def make_figure(
         }
     )
     capture_redshift_coordinate = np.log10(1.0 + redshift)
-    event_redshift_coordinate = np.log10(1.0 + event_redshift)
+    event_redshift_coordinate = np.log10(1.0 + rate_redshift)
     coordinate_limits = (np.log10(1.0 + 0.55), np.log10(1.0 + 10.1))
 
     figure, axes = plt.subplots(
@@ -142,7 +145,9 @@ def make_figure(
 
     thresholds = (1.0e4, 1.0e5, 1.0e6, 1.0e7)
     for threshold, color, line_style in zip(thresholds, COLORS, LINE_STYLES):
-        counts = np.bincount(event_index[chirp_mass >= threshold], minlength=redshift.size)
+        counts = np.bincount(
+            event_index[rate_mass >= threshold], minlength=redshift.size
+        )
         rate = counts / (volume_cmpc3 * interval_gyr)
         axes[0].plot(
             capture_redshift_coordinate[1:],
@@ -159,7 +164,7 @@ def make_figure(
     axes[0].set_ylabel(r"$\mathcal{R}_\mathrm{cap}$ [cMpc$^{-3}$ Gyr$^{-1}$]")
     _add_redshift_axis(axes[0])
     axes[0].legend(
-        title=r"$\mathcal{M}_{\rm c}/M_\odot\geq$",
+        title=r"$M_{\rm rem}/M_\odot\geq$",
         frameon=False,
         handlelength=1.4,
         labelspacing=0.2,
@@ -173,10 +178,10 @@ def make_figure(
     redshift_coordinate_edges = np.linspace(
         np.log10(1.0 + 0.6), np.log10(1.0 + 10.0), 48
     )
-    log_mass_edges = np.linspace(3.8, 9.8, 52)
+    log_mass_edges = np.linspace(3.8, 9.4, 52)
     histogram, _, _ = np.histogram2d(
         event_redshift_coordinate,
-        np.log10(chirp_mass),
+        np.log10(rate_mass),
         bins=(redshift_coordinate_edges, log_mass_edges),
     )
     mesh = axes[1].pcolormesh(
@@ -191,9 +196,9 @@ def make_figure(
     axes[1].set_xlim(
         redshift_coordinate_edges[0], redshift_coordinate_edges[-1]
     )
-    axes[1].set_ylim(3.8, 9.8)
+    axes[1].set_ylim(3.8, 9.4)
     axes[1].set_xlabel(r"$\log_{10}(1+z_{\rm cap})$")
-    axes[1].set_ylabel(r"$\log_{10}(\mathcal{M}_\mathrm{c}/M_\odot)$")
+    axes[1].set_ylabel(r"$\log_{10}(M_\mathrm{rem}/M_\odot)$")
     _add_redshift_axis(axes[1])
     _panel_label(axes[1], "(b)")
     colorbar = figure.colorbar(mesh, ax=axes[1], pad=0.02, fraction=0.05)
@@ -212,8 +217,9 @@ def make_figure(
         mass_ratio_output = output.with_name("hr5_capture_mass_ratio.pdf")
     mass_ratio_figure, mass_ratio_axis = plt.subplots(figsize=(3.35, 3.05))
     bins = np.linspace(0.0, 1.0, 41)
+    valid_ratio = valid_mass & np.isfinite(mass_ratio) & (mass_ratio > 0.0)
     for threshold, color, line_style in zip(thresholds, COLORS, LINE_STYLES):
-        selected = chirp_mass >= threshold
+        selected = valid_ratio & (removed_mass >= threshold)
         mass_ratio_axis.hist(
             mass_ratio[selected],
             bins=bins,
@@ -230,7 +236,7 @@ def make_figure(
     mass_ratio_axis.set_xlabel(r"mass ratio $q$")
     mass_ratio_axis.set_ylabel(r"$p(q)$")
     mass_ratio_axis.legend(
-        title=r"$\mathcal{M}_{\rm c}/M_\odot\geq$",
+        title=r"$M_{\rm rem}/M_\odot\geq$",
         frameon=False,
         handlelength=1.4,
         labelspacing=0.2,
