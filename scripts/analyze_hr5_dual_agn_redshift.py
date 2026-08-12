@@ -17,11 +17,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from fdm_smbh_delay.hr5 import (
+    fit_redshift_rate,
     find_agn_pair_population,
-    locally_weighted_logarithmic_fit,
     locally_weighted_logarithmic_trend,
     pair_component_multiplicity,
     read_mkagn_snapshot,
+    redshift_rate_model,
     spatial_jackknife_pair_statistics,
 )
 
@@ -117,7 +118,7 @@ def _write_measurements(path: Path, rows: list[dict[str, object]]) -> None:
         writer.writerows(rows)
 
 
-def _fit_one_quantity(
+def _fit_local_quantity(
     rows: list[dict[str, object]],
     selection: str,
     value_field: str,
@@ -147,9 +148,65 @@ def _fit_one_quantity(
     return result
 
 
+def _fit_modified_schechter_density(
+    rows: list[dict[str, object]],
+    selection: str,
+    population: str,
+    value_field: str,
+    evaluation_redshift: np.ndarray,
+) -> tuple[np.ndarray, dict[str, object]]:
+    selected_rows = [row for row in rows if row["selection"] == selection]
+    redshift = np.asarray([row["redshift"] for row in selected_rows], dtype=np.float64)
+    value = np.asarray([row[value_field] for row in selected_rows], dtype=np.float64)
+    count = np.asarray([row["dual_pair_count"] for row in selected_rows], dtype=np.int64)
+    fitted = fit_redshift_rate(redshift, value, count)
+    if not fitted.success:
+        raise ValueError(
+            f"Modified Schechter fit failed for {selection} {population}"
+        )
+    result = redshift_rate_model(
+        evaluation_redshift,
+        fitted.phi_star,
+        fitted.z_star,
+        fitted.alpha,
+        fitted.beta,
+    )
+    usable = (count >= 3) & np.isfinite(value) & (value > 0.0)
+    result[
+        (evaluation_redshift < np.min(redshift[usable]))
+        | (evaluation_redshift > np.max(redshift[usable]))
+    ] = np.nan
+    measured_fit = redshift_rate_model(
+        redshift[usable],
+        fitted.phi_star,
+        fitted.z_star,
+        fitted.alpha,
+        fitted.beta,
+    )
+    residual = np.log10(measured_fit / value[usable])
+    parameter_row = {
+        "selection": selection,
+        "population": population,
+        "phi_star_cmpc3": fitted.phi_star,
+        "z_star": fitted.z_star,
+        "alpha": fitted.alpha,
+        "beta": fitted.beta,
+        "fit_point_count": fitted.n_bin,
+        "minimum_fit_redshift": float(np.min(redshift[usable])),
+        "maximum_fit_redshift": float(np.max(redshift[usable])),
+        "rms_log10_residual": float(np.sqrt(np.mean(residual**2))),
+        "maximum_absolute_log10_residual": float(np.max(np.abs(residual))),
+    }
+    return result, parameter_row
+
+
 def _make_fits(
     rows: list[dict[str, object]], neighbor_count: int
-) -> tuple[np.ndarray, dict[tuple[str, str], np.ndarray]]:
+) -> tuple[
+    np.ndarray,
+    dict[tuple[str, str], np.ndarray],
+    list[dict[str, object]],
+]:
     positive_redshift = np.asarray(
         [
             row["redshift"]
@@ -168,24 +225,28 @@ def _make_fits(
         )
     )
     fits: dict[tuple[str, str], np.ndarray] = {}
+    density_parameters: list[dict[str, object]] = []
     for selection in LABELS:
-        fits[(selection, "active_density")] = _fit_one_quantity(
-            rows,
-            selection,
-            "active_smbh_number_density_cmpc3",
-            "active_smbh_number_density_jackknife_error_cmpc3",
-            evaluation_redshift,
-            neighbor_count,
+        fits[(selection, "active_density")], active_parameters = (
+            _fit_modified_schechter_density(
+                rows,
+                selection,
+                "active_smbh",
+                "active_smbh_number_density_cmpc3",
+                evaluation_redshift,
+            )
         )
-        fits[(selection, "density")] = _fit_one_quantity(
-            rows,
-            selection,
-            "dual_pair_number_density_cmpc3",
-            "dual_pair_number_density_jackknife_error_cmpc3",
-            evaluation_redshift,
-            neighbor_count,
+        fits[(selection, "density")], dual_parameters = (
+            _fit_modified_schechter_density(
+                rows,
+                selection,
+                "dual_agn",
+                "dual_pair_number_density_cmpc3",
+                evaluation_redshift,
+            )
         )
-        fits[(selection, "pair_fraction")] = _fit_one_quantity(
+        density_parameters.extend((active_parameters, dual_parameters))
+        fits[(selection, "pair_fraction")] = _fit_local_quantity(
             rows,
             selection,
             "dual_pair_fraction",
@@ -197,7 +258,7 @@ def _make_fits(
         ("dual_member_fraction", "dual_member_count_error_fraction"),
         ("pure_dual_member_fraction", "pure_dual_member_count_error_fraction"),
     ):
-        fits[("bol43", value_field)] = _fit_one_quantity(
+        fits[("bol43", value_field)] = _fit_local_quantity(
             rows,
             "bol43",
             value_field,
@@ -205,7 +266,7 @@ def _make_fits(
             evaluation_redshift,
             neighbor_count,
         )
-    return evaluation_redshift, fits
+    return evaluation_redshift, fits, density_parameters
 
 
 def _write_fits(
@@ -244,49 +305,6 @@ def _write_fits(
                 pure_member,
             ):
                 writer.writerow((values[0], selection, *values[1:]))
-
-
-def _local_parameter_rows(
-    rows: list[dict[str, object]], neighbor_count: int
-) -> list[dict[str, object]]:
-    selected = [
-        row
-        for row in rows
-        if row["selection"] == "bol43" and row["dual_pair_count"] >= 3
-    ]
-    redshift = np.asarray([row["redshift"] for row in selected], dtype=np.float64)
-    parameter_rows: list[dict[str, object]] = []
-    for population, value_field in (
-        ("active_smbh", "active_smbh_number_density_cmpc3"),
-        ("dual_agn", "dual_pair_number_density_cmpc3"),
-    ):
-        value = np.asarray([row[value_field] for row in selected], dtype=np.float64)
-        fitted, coefficients, bandwidth = locally_weighted_logarithmic_fit(
-            redshift,
-            value,
-            redshift,
-            None,
-            neighbor_count=neighbor_count,
-            degree=2,
-        )
-        for row, fit_value, coefficient, local_bandwidth in zip(
-            selected, fitted, coefficients, bandwidth, strict=True
-        ):
-            parameter_rows.append(
-                {
-                    "output_number": row["output_number"],
-                    "redshift": row["redshift"],
-                    "population": population,
-                    "measured_number_density_cmpc3": row[value_field],
-                    "fitted_number_density_cmpc3": fit_value,
-                    "coefficient_a": coefficient[0],
-                    "coefficient_b": coefficient[1],
-                    "coefficient_c": coefficient[2],
-                    "bandwidth_ln_1_plus_z": local_bandwidth,
-                    "neighbor_count": neighbor_count,
-                }
-            )
-    return parameter_rows
 
 
 def _plot(
@@ -455,16 +473,17 @@ def analyze(
             flush=True,
         )
 
-    evaluation_redshift, fits = _make_fits(rows, neighbor_count)
+    evaluation_redshift, fits, density_parameters = _make_fits(rows, neighbor_count)
     output_directory.mkdir(parents=True, exist_ok=True)
     measurement_path = output_directory / "hr5_dual_agn_redshift_evolution.csv"
-    fit_path = output_directory / "hr5_dual_agn_redshift_local_fits.csv"
+    fit_path = output_directory / "hr5_dual_agn_redshift_fits.csv"
     parameter_path = (
-        output_directory / "hr5_dual_agn_redshift_local_fit_parameters.csv"
+        output_directory
+        / "hr5_dual_agn_redshift_modified_schechter_parameters.csv"
     )
     _write_measurements(measurement_path, rows)
     _write_fits(fit_path, evaluation_redshift, fits)
-    _write_measurements(parameter_path, _local_parameter_rows(rows, neighbor_count))
+    _write_measurements(parameter_path, density_parameters)
     _plot(
         output_directory / "hr5_dual_agn_redshift_evolution.pdf",
         rows,
@@ -488,18 +507,21 @@ def analyze(
             "method": "spatial jackknife along the long axis",
             "region_count": spatial_region_count,
         },
-        "local_fit": {
+        "density_fit": {
+            "function": "n_X(z) = phi_star (z/z_star)^alpha exp[-(z/z_star)^beta]",
+            "parameter_table": str(parameter_path),
+            "measurement_weight": "none",
+            "minimum_dual_pair_count": 3,
+            "fit_interval": "bounded by the minimum and maximum retained redshifts",
+        },
+        "fraction_fit": {
+            "method": "locally weighted quadratic interpolation",
             "coordinate": "log(1 + redshift)",
-            "quantity": "natural logarithm of the measured abundance",
-            "centered_function": "ln n_X(z) = a_X(z0) + b_X(z0) u + c_X(z0) u^2; u = ln[(1+z)/(1+z0)] / h(z0)",
-            "coefficient_table": str(parameter_path),
+            "quantity": "natural logarithm of each measured fraction",
             "polynomial_degree": 2,
             "neighbor_count": neighbor_count,
             "distance_weight": "tricube",
-            "measurement_weight": (
-                "none; jackknife uncertainties are shown on the measurements"
-            ),
-            "minimum_dual_pair_count": 3,
+            "measurement_weight": "none",
         },
         "zero_count_upper_limit": {
             "confidence": 0.95,

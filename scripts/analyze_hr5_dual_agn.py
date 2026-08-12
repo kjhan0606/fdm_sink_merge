@@ -545,7 +545,7 @@ def _plot_demographics(
     redshift = np.asarray([data[number]["redshift"] for number in output_numbers])
 
     redshift_measurement_path = output.parent / "hr5_dual_agn_redshift_evolution.csv"
-    redshift_fit_path = output.parent / "hr5_dual_agn_redshift_local_fits.csv"
+    redshift_fit_path = output.parent / "hr5_dual_agn_redshift_fits.csv"
     redshift_measurements: list[dict[str, str]] = []
     redshift_fits: list[dict[str, str]] = []
     if redshift_measurement_path.exists() and redshift_fit_path.exists():

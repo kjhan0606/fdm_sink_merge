@@ -199,16 +199,15 @@ The fiducial selection first yields a nonzero pair count at redshift 8.666.
 The measured number density reaches `6.430e-4 cMpc^-3` at redshift 3.394 and
 decreases to `3.588e-6 cMpc^-3` at redshift 0.625. The files
 `hr5_dual_agn_redshift_evolution.csv` and
-`hr5_dual_agn_redshift_local_fits.csv` contain the direct measurements and the
-displayed local fits. The file
-`hr5_dual_agn_redshift_local_fit_parameters.csv` gives the local coefficients
-for the active-SMBH and dual-AGN number densities. At each target redshift
-`z0`, the fit is
-`ln[n_X(z)/(1 cMpc^-3)] = a_X(z0) + b_X(z0) u + c_X(z0) u^2`, where
-`u = ln[(1 + z)/(1 + z0)] / h(z0)`. The bandwidth is the greatest distance in
-`ln(1 + z)` among the seven nearest outputs with at least three dual AGN
-candidates. Tricube distance weights define each local fit. Zero-count outputs
-are shown as 95 percent Poisson upper limits.
+`hr5_dual_agn_redshift_fits.csv` contain the direct measurements and the
+displayed fits. The number densities follow the modified Schechter-like form
+`n_X(z) = phi_star (z/z_star)^alpha exp[-(z/z_star)^beta]`. The file
+`hr5_dual_agn_redshift_modified_schechter_parameters.csv` gives the four global
+parameters and the logarithmic residuals for the active-SMBH and dual-AGN
+number densities. The fits use outputs with at least three dual AGN candidates
+and remain confined to the sampled redshift interval. The fractions retain a
+locally weighted quadratic interpolation through the seven nearest qualifying
+outputs. Zero-count outputs are shown as 95 percent Poisson upper limits.
 
 | redshift | active AGN | dual pairs | number density [cMpc^-3] | pair/AGN | member/AGN | pure member/AGN |
 |---:|---:|---:|---:|---:|---:|---:|
