@@ -12,14 +12,16 @@ The file contains 1,688,677 fixed sink histories over 278 outputs. The extractio
 finds 576,278 binary captures from disappearing SMBH particles. Of these events,
 576,036 have positive masses for both objects at the last resolved output.
 
-The companion-selection calculation is reconstructed from `mkmerging.c`. A sink
+The companion-selection calculation follows `mkmerging.c`. A sink
 that is present at output `i-1` and absent at output `i` is matched to a sink at
 `i`. The search radius starts at the nearest-survivor distance, increases by
 0.002 cMpc, and stops at 0.5 cMpc. Within each radius, the most massive survivor
-with at least twice the disappearing sink mass is selected. The assigned
-surviving SMBH is therefore an assigned companion rather than the partner
-recorded for the merger of two sink particles. The catalog keeps `receiver_id`
-as the historical field name.
+with at least twice the removed sink mass is selected. This procedure writes
+`mergeid` and `mergeistep` into `Sink_Merging_Tree.dat.Updated`; it does not read
+a partner identifier from a RAMSES event record. The surviving SMBH is therefore
+an assigned companion rather than a directly recorded participant in the
+numerical binary capture. The catalogue keeps `receiver_id` as the historical
+field name.
 
 ## Output-step convention
 
@@ -253,11 +255,13 @@ survey detection probability because that step requires a spectral and
 instrument response model.
 
 The local MkAGN products contain zero-valued galaxy identifiers and host mass
-fields. The archived FoF/PSB paths point to a scratch directory that is no
-longer present. The present sample therefore cannot separate same-galaxy and
-distinct-galaxy pairs or construct a host-matched control population. The
-number-density comparison with distinct-galaxy samples in the literature must
-retain this limitation.
+fields. The original FoF/PSB products have now been located under
+`/scratch/kjhan/Hydro/HR5/FoFPSB/02_without_dc/Ver2`. A direct host assignment
+is possible whenever `GALFIND.DATA`, its matching `GALCATALOG.LIST`, and the
+optional `background_ptl` file are present. Canonical FoF/PSB files exist for
+all 17 outputs with MkAGN records, including outputs 89, 117, and 296 used for
+the detailed active-pair calculation. Only directories named exactly
+`FoF.NNNNN` are used.
 
 The output files are `hr5_dual_agn_summary.json`,
 `hr5_dual_agn_capture_cdf.csv`, `hr5_dual_agn_pairs.csv`, and
@@ -314,7 +318,81 @@ fraction. Direct numerical comparison therefore requires matched selections.
   selected dual AGNs coalesce within about 1 Gyr.
 
 The HR5 values lie within the broad range of these studies. The common
-luminosity and separation cuts allow a selection-level comparison. The missing
-host association prevents the distinct-galaxy cut used in the recent
-multi-simulation comparison. Obscuration, survey response, and the numerical
-capture prescription remain separate physical uncertainties.
+luminosity and separation cuts allow a selection-level comparison. Direct
+membership in a PSB galaxy now permits the distinct-galaxy cut used in the
+recent multi-simulation comparison. Obscuration, survey response, and the
+numerical capture prescription remain separate physical uncertainties.
+
+## Direct association of sink particles with PSB galaxies
+
+`GALFIND.DATA` stores one `HaloInfo` record for each FoF halo. Each halo record
+is followed by its `SubInfo` records and by the dark matter, gas, sink, and star
+particles assigned to each PSB galaxy. The sink identifier therefore provides
+a direct host assignment rather than a nearest-galaxy association.
+
+The original Intel compiler saved `DmType`, `GasType`, and `StarType` records
+with 128 bytes per particle. `SinkType` occupies 168 bytes and stores its
+32-bit identifier at byte 160. A current GCC build gives a different size for
+`GasType`, so the extractor uses the measured legacy byte sizes explicitly.
+
+Build the extractor with:
+
+```bash
+cc -std=c11 -O3 -Wall -Wextra -Werror -fopenmp \
+  -o /tmp/extract_hr5_sink_hosts tools/extract_hr5_sink_hosts.c -lm
+```
+
+For output 117, run:
+
+```bash
+/tmp/extract_hr5_sink_hosts \
+  --data /scratch/kjhan/Hydro/HR5/FoFPSB/02_without_dc/Ver2/FoF_Data/FoF.00117/GALFIND.DATA.00117 \
+  --list /scratch/kjhan/Hydro/HR5/FoFPSB/02_without_dc/Ver2/FoF_Data/FoF.00117/GALCATALOG.LIST.00117 \
+  --output /scratch/kjhan/Hydro/HR5/FoFPSB/02_without_dc/Ver2/Derived_Sink_Hosts/sink_hosts.00117.csv \
+  --output-number 117 \
+  --redshift 1.4988132 \
+  --threads 8
+```
+
+The table records `sink_id`, the sequential PSB-galaxy identifier
+`galaxy_gid`, the FoF and PSB indices, sink and host masses, positions, and
+velocities, together with the dark-matter, gas, sink, stellar, and total
+particle counts of the host. The extractor verifies the particle count in each PSB record, the
+sum of the sink masses assigned to each host, duplicate sink identifiers,
+sampled metadata shared by the two galaxy-finder files, and the final byte
+offset in every input file.
+
+The optional `--background background_ptl.NNNNN` argument also extracts sinks
+that do not belong to a PSB galaxy and marks them with `galaxy_gid = -1` and
+`background = 1`. A complete background scan is substantially more expensive
+because the file contains one variable-length record for every FoF halo. The
+direct-host calculation therefore omits this option. A sink absent from the
+result has no direct PSB assignment at that output; it is not assigned to the
+nearest galaxy.
+
+## Descendants of the directly assigned host galaxies
+
+The 129 files named `GalaxyLinkedList.NNNNN` cover outputs 18--123 and 23
+additional outputs through output 296. Each native record stores a
+most-bound-particle link, the PSB-galaxy identifier at the current output, and
+the array index of its record at the following available galaxy output. A PSB
+galaxy may have several tracer records. Their valid links normally enter one
+descendant. If they enter more than one galaxy, the analysis accepts a unique
+record marked as the dominant progenitor by the native tree calculation. A
+unique major-branch link provides a secondary resolution, while any remaining
+case stays ambiguous.
+
+Run:
+
+```bash
+PYTHONPATH=src python scripts/analyze_hr5_host_descendants.py
+```
+
+The calculation follows both host galaxies of every spatially selected active
+SMBH pair. It records the first output in which the two tracks enter one common
+descendant. The preceding and current galaxy outputs define the time interval.
+Systems with two distinct tracks at output 296 are right-censored at
+`z=0.625`. They are not counted as host galaxies that never merge. The table
+also joins the interval of a later possible binary capture for the same assigned
+SMBH pair when that event exists in the active-pair catalogue. The sink
+histories do not identify the companion selected by the simulation.

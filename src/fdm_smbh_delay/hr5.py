@@ -227,6 +227,41 @@ MKAGN_DTYPE_200 = np.dtype(
 )
 MKAGN_ID_OFFSETS = {200: 160, 336: 288, 360: 312}
 
+SINK_HOST_BASE_FIELDS = [
+    ("sink_id", "<i8"),
+    ("fof_index", "<i8"),
+    ("psb_index", "<i8"),
+    ("galaxy_gid", "<i8"),
+    ("background", "<i4"),
+    ("host_total_mass_msun_h", "<f8"),
+    ("host_dm_mass_msun_h", "<f8"),
+    ("host_gas_mass_msun_h", "<f8"),
+    ("host_sink_mass_msun_h", "<f8"),
+    ("host_stellar_mass_msun_h", "<f8"),
+]
+SINK_HOST_COUNT_FIELDS = [
+    ("host_dm_count", "<i8"),
+    ("host_gas_count", "<i8"),
+    ("host_stellar_count", "<i8"),
+    ("host_particle_count", "<i8"),
+]
+SINK_HOST_DTYPE = np.dtype(
+    [
+        *SINK_HOST_BASE_FIELDS,
+        *SINK_HOST_COUNT_FIELDS,
+    ]
+)
+
+HOST_RELATION_LABELS = np.array(
+    (
+        "no direct PSB assignment",
+        "sink outside a PSB galaxy",
+        "same PSB galaxy",
+        "distinct PSB galaxies in one FoF halo",
+        "distinct FoF haloes",
+    )
+)
+
 
 @dataclass(frozen=True)
 class RedshiftRateFit:
@@ -297,6 +332,126 @@ def read_mkagn_snapshot(path: Path) -> tuple[float, float, np.ndarray]:
             )
         records = np.fromfile(stream, dtype=dtype, count=int(count[0]))
     return float(redshift[0]), float(local_timestep_yr[0]), records
+
+
+def read_sink_host_catalog(path: Path) -> np.ndarray:
+    """Read the compact sink-to-PSB table produced by the HR5 extractor."""
+
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    with path.open(encoding="ascii") as stream:
+        header = stream.readline().strip().split(",")
+    field_index = {name: index for index, name in enumerate(header)}
+    required = [name for name, _ in SINK_HOST_BASE_FIELDS]
+    missing = set(required) - set(field_index)
+    if missing:
+        raise ValueError(f"Sink host catalog is missing columns: {sorted(missing)}")
+    available_counts = [
+        name for name, _ in SINK_HOST_COUNT_FIELDS if name in field_index
+    ]
+    selected = required + available_counts
+    selected_dtype = np.dtype(
+        [(name, SINK_HOST_DTYPE.fields[name][0]) for name in selected]
+    )
+    loaded = np.loadtxt(
+        path,
+        delimiter=",",
+        skiprows=1,
+        usecols=tuple(field_index[name] for name in selected),
+        dtype=selected_dtype,
+        ndmin=1,
+    )
+    records = np.empty(loaded.size, dtype=SINK_HOST_DTYPE)
+    for name in required + available_counts:
+        records[name] = loaded[name]
+    for name, _ in SINK_HOST_COUNT_FIELDS:
+        if name not in available_counts:
+            records[name] = -1
+    if records.size == 0:
+        return records
+    if np.any(records["sink_id"] <= 0):
+        raise ValueError("Sink host catalog contains a nonpositive sink identifier")
+    identifier = np.sort(records["sink_id"])
+    if np.any(np.diff(identifier) == 0):
+        raise ValueError("Sink host catalog contains duplicate sink identifiers")
+    valid_background = np.isin(records["background"], (0, 1))
+    if not np.all(valid_background):
+        raise ValueError("Sink host catalog contains an invalid background flag")
+    assigned = records["background"] == 0
+    if np.any(records["galaxy_gid"][assigned] < 0):
+        raise ValueError("A PSB member has no galaxy identifier")
+    if np.any(records["galaxy_gid"][~assigned] != -1):
+        raise ValueError("A background sink has a PSB galaxy identifier")
+    for name, _ in SINK_HOST_COUNT_FIELDS:
+        value = records[name]
+        if np.any(value < -1):
+            raise ValueError(f"Sink host catalog contains an invalid {name}")
+    return records
+
+
+def lookup_sink_hosts(sink_id: np.ndarray, host_catalog: np.ndarray) -> np.ndarray:
+    """Return the row of each sink in a direct HR5 host catalog, or ``-1``."""
+
+    query = np.asarray(sink_id, dtype=np.int64)
+    if host_catalog.dtype != SINK_HOST_DTYPE:
+        raise ValueError("host_catalog has an incompatible dtype")
+    if host_catalog.size == 0:
+        return np.full(query.shape, -1, dtype=np.int64)
+    order = np.argsort(host_catalog["sink_id"], kind="stable")
+    ordered_id = host_catalog["sink_id"][order]
+    position = np.searchsorted(ordered_id, query)
+    inside = position < ordered_id.size
+    found = np.zeros(query.shape, dtype=bool)
+    found[inside] = ordered_id[position[inside]] == query[inside]
+    result = np.full(query.shape, -1, dtype=np.int64)
+    result[found] = order[position[found]]
+    return result
+
+
+def classify_sink_pair_hosts(
+    first_id: np.ndarray,
+    second_id: np.ndarray,
+    host_catalog: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Classify whether the two SMBHs occupy the same or distinct HR5 hosts.
+
+    Codes index :data:`HOST_RELATION_LABELS`. Sinks absent from the direct PSB
+    table take code 0, explicitly extracted FoF-background sinks take code 1,
+    and direct PSB assignments take codes 2 through 4.
+    """
+
+    first = np.asarray(first_id, dtype=np.int64)
+    second = np.asarray(second_id, dtype=np.int64)
+    if first.shape != second.shape:
+        raise ValueError("The two sink-identifier arrays must have the same shape")
+    first_row = lookup_sink_hosts(first, host_catalog)
+    second_row = lookup_sink_hosts(second, host_catalog)
+    relation = np.zeros(first.shape, dtype=np.int8)
+    found = (first_row >= 0) & (second_row >= 0)
+    if not np.any(found):
+        return relation, first_row, second_row
+
+    found_index = np.flatnonzero(found)
+    first_found = host_catalog[first_row[found]]
+    second_found = host_catalog[second_row[found]]
+    background = (first_found["background"] == 1) | (second_found["background"] == 1)
+    relation[found_index[background]] = 1
+
+    assigned = ~background
+    assigned_index = found_index[assigned]
+    first_assigned = first_found[assigned]
+    second_assigned = second_found[assigned]
+    same_psb = first_assigned["galaxy_gid"] == second_assigned["galaxy_gid"]
+    relation[assigned_index[same_psb]] = 2
+    different_psb = ~same_psb
+    same_fof = (
+        first_assigned["fof_index"][different_psb]
+        == second_assigned["fof_index"][different_psb]
+    )
+    different_index = assigned_index[different_psb]
+    relation[different_index[same_fof]] = 3
+    relation[different_index[~same_fof]] = 4
+    return relation, first_row, second_row
 
 
 def hard_xray_luminosity_from_bolometric(

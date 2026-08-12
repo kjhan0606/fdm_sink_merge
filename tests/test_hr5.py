@@ -8,6 +8,7 @@ from fdm_smbh_delay.hr5 import (
     MKAGN_DTYPE,
     MKAGN_DTYPE_200,
     MKAGN_DTYPE_336,
+    SINK_HOST_DTYPE,
     binned_source_rate,
     bootstrap_binned_source_rate,
     bootstrap_redshift_rate,
@@ -22,12 +23,15 @@ from fdm_smbh_delay.hr5 import (
     histogram_quantiles,
     infer_capture_receivers,
     interval_censored_cumulative_bounds,
+    classify_sink_pair_hosts,
     locally_weighted_logarithmic_trend,
+    lookup_sink_hosts,
     match_population_by_properties,
     pair_component_labels,
     pair_component_multiplicity,
     project_pair_observables,
     read_mkagn_snapshot,
+    read_sink_host_catalog,
     redshift_rate_model,
     spatial_jackknife_pair_statistics,
 )
@@ -216,6 +220,36 @@ def test_hard_xray_luminosity_reconstructs_legacy_correction() -> None:
     assert hard_xray[0] == 0.0
     assert np.allclose(hard_xray[1:3], expected)
     assert np.isnan(hard_xray[3])
+
+
+def test_read_and_classify_direct_sink_hosts(tmp_path) -> None:
+    path = tmp_path / "sink_hosts.csv"
+    path.write_text(
+        "output,redshift,sink_id,fof_index,psb_index,galaxy_gid,background,"
+        "sink_x_cmpc_h,sink_y_cmpc_h,sink_z_cmpc_h,sink_vx_km_s,sink_vy_km_s,"
+        "sink_vz_km_s,sink_mass_msun_h,host_total_mass_msun_h,"
+        "host_dm_mass_msun_h,host_gas_mass_msun_h,host_sink_mass_msun_h,"
+        "host_stellar_mass_msun_h,host_x_cmpc_h,host_y_cmpc_h,host_z_cmpc_h,"
+        "host_vx_km_s,host_vy_km_s,host_vz_km_s,host_sink_count\n"
+        "117,1.5,10,4,0,7,0,0,0,0,0,0,0,1,100,60,10,1,29,0,0,0,0,0,0,1\n"
+        "117,1.5,11,4,0,7,0,0,0,0,0,0,0,1,100,60,10,1,29,0,0,0,0,0,0,1\n"
+        "117,1.5,12,4,1,8,0,0,0,0,0,0,0,1,50,30,5,1,14,0,0,0,0,0,0,1\n"
+        "117,1.5,13,9,0,20,0,0,0,0,0,0,0,1,80,50,8,1,21,0,0,0,0,0,0,1\n"
+        "117,1.5,14,4,-1,-1,1,0,0,0,0,0,0,1,0,0,0,1,0,0,0,0,0,0,0,1\n"
+    )
+    hosts = read_sink_host_catalog(path)
+    assert hosts.dtype == SINK_HOST_DTYPE
+    assert np.all(hosts["host_stellar_count"] == -1)
+    assert lookup_sink_hosts(np.array([13, 99, 10]), hosts).tolist() == [3, -1, 0]
+
+    relation, first, second = classify_sink_pair_hosts(
+        np.array([10, 10, 10, 10, 10]),
+        np.array([11, 12, 13, 14, 99]),
+        hosts,
+    )
+    assert relation.tolist() == [2, 3, 4, 1, 0]
+    assert first.tolist() == [0, 0, 0, 0, 0]
+    assert second.tolist() == [1, 2, 3, 4, -1]
 
 
 def test_legacy_mkagn_pairs_derive_hard_xray_luminosity() -> None:
