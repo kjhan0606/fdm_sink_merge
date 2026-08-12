@@ -270,6 +270,11 @@ output layers are documented in
 [`docs/hr5_dual_agn_jwst_mock.md`](docs/hr5_dual_agn_jwst_mock.md).
 The same document describes the unit-source PSF regression test, the separate
 FSPS-calibrated F200W quick look, its foreground-screen dust and scattering
-preview, and the three-dimensional stellar, dust-cell, and AGN catalogues
-prepared for SKIRT. The original non-photometric image remains the regression
-baseline.
+preview, and the final three-dimensional SKIRT calculation. The SKIRT image
+uses the HR5 stellar and AMR dust geometry, bolometrically normalized quasar
+spectra in observer-aligned 30-degree biconical beams, $10^7$ photon packets
+per system, and the detector-sampled F200W PSF. A common base-10 logarithmic
+surface-brightness scale is used for the six panels.
+Oppositely directed arrows perpendicular to each projected AGN-pair axis mark
+the two active nuclei. The original non-photometric image remains the
+regression baseline.

@@ -135,7 +135,7 @@ images, and their sum. The display transform is absent from every physical
 array. All six panels pass the zero-dust, zero-scattering, flux-budget,
 component-sum, FITS-checksum, and delta-source gates.
 
-## Three-dimensional transfer input
+## Three-dimensional transfer with SKIRT
 
 `scripts/export_hr5_dual_agn_skirt_inputs.py` writes a separate source and
 medium catalogue for every panel. Stellar files follow the SKIRT
@@ -149,9 +149,51 @@ the declared observer lies on the positive simulation z axis.
 The export manifest is
 `results/hr5/hr5_dual_agn_skirt_input_manifest_z0p625.json`. The catalogues are
 under `mock_observations/output_00296/skirt_inputs` in the HR5 analysis area.
-They prepare a three-dimensional calculation but do not constitute a SKIRT
-run. SKIRT v9.0 was built from revision `1facef2` in
+SKIRT v9.0 was built from revision `1facef2` in
 `/scratch/kjhan/software/SKIRT`, together with version 8 of the required Core
-resource pack. The next physical step is to choose an AGN SED and dust
-mixture, run a dust-free transfer test against the direct projection, and then
-enable absorption and multiple anisotropic scattering in that order.
+resource pack.
+
+`scripts/run_hr5_dual_agn_skirt.py` imports the HR5 stellar particles and AMR
+dust cells without collapsing their line-of-sight coordinates. Stellar spectra
+come from the Kroupa-IMF FSPS family distributed with SKIRT. Each active SMBH
+is represented by the SKIRT quasar spectrum normalized to its HR5 bolometric
+luminosity. The final optical-quasar view adopts an observer-aligned biconical
+beam with a half-opening angle of 30 degrees. Conservation of the total
+bolometric luminosity then raises the on-axis specific intensity by a factor of
+7.464 relative to isotropic emission. The medium uses the surviving dust mass
+in each native cuboidal cell and the Milky-Way Weingartner--Draine grain
+mixture. Forced scattering retains both direct and multiply scattered F200W
+light. Thermal dust emission is not included because observer-frame F200W
+samples 1.22 micron in the rest frame at this redshift.
+
+The final calculation launches $10^7$ photon packets for each of the six
+systems. SKIRT applies the observer-frame STScI F200W band response. The total
+surface-brightness maps are then convolved with the detector-sampled in-flight
+F200W PSF. `scripts/make_hr5_dual_agn_skirt_figure.py` applies one base-10
+logarithmic display scale to all panels and leaves the physical FITS arrays
+untransformed. Its lower and upper limits are the 1st and 99.99th percentiles
+of all positive pixels in the six images. The AGN positions are indicated only
+by arrows. For each pair, the two arrows lie perpendicular to the projected
+separation vector and point in opposite directions toward the nuclei. Each
+arrowhead stops 25 detector pixels, or 5.42 pkpc, before the corresponding AGN
+coordinate so that it does not obscure the PSF core. This placement avoids
+suggesting that an arrow represents an orbital velocity or force. Each panel
+also gives the two HR5 bolometric luminosities in erg per second. Numbered
+circles at the arrow tails associate each nucleus with the corresponding
+luminosity entry. Every panel shows a 1 arcsec scale bar. In the HR5
+cosmology at redshift 0.625, this angle corresponds to 6.972 pkpc.
+
+The final products are
+
+- `results/hr5/hr5_dual_agn_jwst_f200w_skirt_z0p625.pdf`
+- `results/hr5/hr5_dual_agn_jwst_f200w_skirt_z0p625.png`
+- `results/hr5/hr5_dual_agn_jwst_f200w_skirt_z0p625.json`
+- `mock_observations/output_00296/hr5_dual_agn_jwst_f200w_skirt_z0p625.fits`
+
+The FITS product retains the transparent, direct, scattered, total, and
+PSF-convolved maps for every system. The relative residual in the identity
+between the total image and the sum of its direct and scattered components is
+between $2.11\times10^{-8}$ and $3.63\times10^{-8}$ across the six panels. The
+dot product between every arrow vector and its projected pair axis is zero to
+floating-point precision, while the cosine between the two arrow vectors is
+(-1).
