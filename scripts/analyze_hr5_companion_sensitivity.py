@@ -180,10 +180,11 @@ def _plot(path: Path, rows: list[dict[str, object]]) -> None:
     figure.subplots_adjust(wspace=0.34, bottom=0.23, left=0.09, right=0.98, top=0.97)
     axes[0].bar(x, count, width=0.55, color=("#777777", "#0072B2", "#D55E00"))
     axes[0].set_yscale("log")
+    axes[0].set_ylim(20.0, 6.0e4)
     axes[0].set_ylabel("number of selected events")
     axes[0].set_xticks(x, labels)
     for position, value in zip(x, count, strict=True):
-        axes[0].text(position, value * 1.15, f"{int(value):,}", ha="center", va="bottom")
+        axes[0].text(position, value * 1.08, f"{int(value):,}", ha="center", va="bottom")
 
     midpoint = 0.5 * (lower + upper)
     axes[1].errorbar(
@@ -210,8 +211,10 @@ def _plot(path: Path, rows: list[dict[str, object]]) -> None:
     axes[1].set_ylabel("fraction requiring no added host delay")
     axes[1].set_xticks(x, labels)
     axes[1].legend(frameon=False, loc="center left", handlelength=1.4)
-    for label, axis in zip(("(a)", "(b)"), axes, strict=True):
-        axis.text(0.03, 0.96, label, transform=axis.transAxes, va="top")
+    axes[0].text(
+        0.97, 0.96, "(a)", transform=axes[0].transAxes, ha="right", va="top"
+    )
+    axes[1].text(0.03, 0.96, "(b)", transform=axes[1].transAxes, va="top")
     figure.savefig(path, bbox_inches="tight")
     plt.close(figure)
 
