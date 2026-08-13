@@ -1,0 +1,1362 @@
+"""Numerical-population utilities for the legacy Horizon Run 5 sink tree."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+from astropy import units as u
+from astropy.constants import G, M_sun, c
+from astropy.cosmology import FlatLambdaCDM
+from scipy.integrate import cumulative_trapezoid
+from scipy.optimize import least_squares, linear_sum_assignment
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import connected_components
+from scipy.spatial import cKDTree
+
+
+NSTEP_MAX = 296
+HEADER_DTYPE = np.dtype(
+    [
+        ("redshift", "<f4", (NSTEP_MAX,)),
+        ("output_number", "<f4", (NSTEP_MAX,)),
+        ("omega_m", "<f4"),
+        ("omega_lambda", "<f4"),
+        ("h0", "<f4"),
+        ("nstep", "<i4"),
+        ("nsink", "<i4"),
+        ("legacy_pointer", "<u8"),
+    ],
+    align=True,
+)
+SINK_DTYPE = np.dtype(
+    [
+        ("sink_id", "<i4"),
+        ("state", "<f4", (NSTEP_MAX, 7)),
+        ("receiver_id", "<i4"),
+        ("capture_index", "<i4"),
+    ],
+    align=True,
+)
+
+# Native double-precision AGNType written by SRC(AGN)/SRC(MkAGN)/mkagn.c.
+# The first 39 floating-point fields precede four 32-bit integer fields and
+# four final floating-point host-galaxy fields.  The record size is 360 bytes.
+MKAGN_DTYPE = np.dtype(
+    [
+        ("x", "<f8"),
+        ("y", "<f8"),
+        ("z", "<f8"),
+        ("vx", "<f8"),
+        ("vy", "<f8"),
+        ("vz", "<f8"),
+        ("mass", "<f8"),
+        ("tbirth", "<f8"),
+        ("Jx", "<f8"),
+        ("Jy", "<f8"),
+        ("Jz", "<f8"),
+        ("Sx", "<f8"),
+        ("Sy", "<f8"),
+        ("Sz", "<f8"),
+        ("dMsmbh", "<f8"),
+        ("dMBH_coarse", "<f8"),
+        ("dMEd_coarse", "<f8"),
+        ("Esave", "<f8"),
+        ("Smag", "<f8"),
+        ("eps", "<f8"),
+        ("dtnew", "<f8"),
+        ("dMBHoverdt", "<f8"),
+        ("dMEdoverdt", "<f8"),
+        ("EAGN", "<f8"),
+        ("Lbol", "<f8"),
+        ("LhX", "<f8"),
+        ("LsX", "<f8"),
+        ("L15um", "<f8"),
+        ("LB", "<f8"),
+        ("LR", "<f8"),
+        ("LUV", "<f8"),
+        ("NHIxm", "<f8"),
+        ("NHIym", "<f8"),
+        ("NHIzm", "<f8"),
+        ("NHIxp", "<f8"),
+        ("NHIyp", "<f8"),
+        ("NHIzp", "<f8"),
+        ("NHId", "<f8"),
+        ("mdisk", "<f8"),
+        ("sink_id", "<i4"),
+        ("mode", "<i4"),
+        ("gid", "<i4"),
+        ("global_gid", "<i4"),
+        ("Mstar", "<f8"),
+        ("Mgas", "<f8"),
+        ("Mtot", "<f8"),
+        ("Mdm", "<f8"),
+    ],
+    align=True,
+)
+MKAGN_DTYPE_336 = np.dtype(
+    {
+        "names": (
+            "x",
+            "y",
+            "z",
+            "vx",
+            "vy",
+            "vz",
+            "mass",
+            "Lbol",
+            "LhX",
+            "sink_id",
+            "mode",
+            "gid",
+            "global_gid",
+            "Mstar",
+            "Mgas",
+            "Mtot",
+            "Mdm",
+        ),
+        "formats": (
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<i4",
+            "<i4",
+            "<i4",
+            "<i4",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+        ),
+        "offsets": (
+            0,
+            8,
+            16,
+            24,
+            32,
+            40,
+            48,
+            192,
+            200,
+            288,
+            292,
+            296,
+            300,
+            304,
+            312,
+            320,
+            328,
+        ),
+        "itemsize": 336,
+    }
+)
+MKAGN_DTYPE_200 = np.dtype(
+    {
+        "names": (
+            "x",
+            "y",
+            "z",
+            "vx",
+            "vy",
+            "vz",
+            "mass",
+            "dMsmbh",
+            "dMBH_coarse",
+            "dMEd_coarse",
+            "Esave",
+            "Smag",
+            "eps",
+            "sink_id",
+            "mode",
+            "dtnew",
+            "dMBHoverdt",
+            "dMEdoverdt",
+            "Lbol",
+        ),
+        "formats": (
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<i4",
+            "<i4",
+            "<f8",
+            "<f8",
+            "<f8",
+            "<f8",
+        ),
+        "offsets": (
+            0,
+            8,
+            16,
+            24,
+            32,
+            40,
+            48,
+            112,
+            120,
+            128,
+            136,
+            144,
+            152,
+            160,
+            164,
+            168,
+            176,
+            184,
+            192,
+        ),
+        "itemsize": 200,
+    }
+)
+MKAGN_ID_OFFSETS = {200: 160, 336: 288, 360: 312}
+
+SINK_HOST_BASE_FIELDS = [
+    ("sink_id", "<i8"),
+    ("fof_index", "<i8"),
+    ("psb_index", "<i8"),
+    ("galaxy_gid", "<i8"),
+    ("background", "<i4"),
+    ("host_total_mass_msun_h", "<f8"),
+    ("host_dm_mass_msun_h", "<f8"),
+    ("host_gas_mass_msun_h", "<f8"),
+    ("host_sink_mass_msun_h", "<f8"),
+    ("host_stellar_mass_msun_h", "<f8"),
+]
+SINK_HOST_COUNT_FIELDS = [
+    ("host_dm_count", "<i8"),
+    ("host_gas_count", "<i8"),
+    ("host_stellar_count", "<i8"),
+    ("host_particle_count", "<i8"),
+]
+SINK_HOST_DTYPE = np.dtype(
+    [
+        *SINK_HOST_BASE_FIELDS,
+        *SINK_HOST_COUNT_FIELDS,
+    ]
+)
+
+HOST_RELATION_LABELS = np.array(
+    (
+        "no direct PSB assignment",
+        "sink outside a PSB galaxy",
+        "same PSB galaxy",
+        "distinct PSB galaxies in one FoF halo",
+        "distinct FoF haloes",
+    )
+)
+
+
+@dataclass(frozen=True)
+class RedshiftRateFit:
+    """Parameters of the redshift distribution used in the original draft."""
+
+    phi_star: float
+    z_star: float
+    alpha: float
+    beta: float
+    success: bool
+    n_bin: int
+
+
+def read_tree_header(path: Path) -> np.void:
+    """Read and validate the native C-structure header of an HR5 sink tree."""
+
+    header = np.fromfile(path, dtype=HEADER_DTYPE, count=1)
+    if header.size != 1:
+        raise ValueError(f"Could not read the HR5 header from {path}")
+    result = header[0]
+    expected_size = HEADER_DTYPE.itemsize + int(result["nsink"]) * SINK_DTYPE.itemsize
+    if path.stat().st_size != expected_size:
+        raise ValueError(
+            f"Unexpected file size for {path}. Expected {expected_size} bytes and found "
+            f"{path.stat().st_size} bytes."
+        )
+    return result
+
+
+def read_mkagn_snapshot(path: Path) -> tuple[float, float, np.ndarray]:
+    r"""Read one ``agn.NNNNN.dat`` snapshot created by the legacy MkAGN code.
+
+    The returned masses are in :math:`h^{-1} M_\odot`, coordinates are in
+    :math:`h^{-1}\,\mathrm{cMpc}`, and velocities are physical km/s.
+    """
+
+    with path.open("rb") as stream:
+        redshift = np.fromfile(stream, dtype="<f8", count=1)
+        local_timestep_yr = np.fromfile(stream, dtype="<f8", count=1)
+        count = np.fromfile(stream, dtype="<i4", count=1)
+        if redshift.size != 1 or local_timestep_yr.size != 1 or count.size != 1:
+            raise ValueError(f"Could not read the MkAGN header from {path}")
+        payload_size = path.stat().st_size - 20
+        if int(count[0]) <= 0 or payload_size % int(count[0]) != 0:
+            raise ValueError(
+                f"The MkAGN payload in {path} is incompatible with its particle count"
+            )
+        record_size = payload_size // int(count[0])
+        if record_size not in MKAGN_ID_OFFSETS:
+            raise ValueError(
+                f"Unsupported MkAGN record size {record_size} bytes in {path}. "
+                f"Known sizes are {sorted(MKAGN_ID_OFFSETS)}."
+            )
+        if record_size == MKAGN_DTYPE.itemsize:
+            dtype = MKAGN_DTYPE
+        elif record_size == MKAGN_DTYPE_336.itemsize:
+            dtype = MKAGN_DTYPE_336
+        elif record_size == MKAGN_DTYPE_200.itemsize:
+            dtype = MKAGN_DTYPE_200
+        else:
+            dtype = np.dtype(
+                {
+                    "names": ("x", "y", "z", "vx", "vy", "vz", "mass", "sink_id"),
+                    "formats": ("<f8", "<f8", "<f8", "<f8", "<f8", "<f8", "<f8", "<i4"),
+                    "offsets": (0, 8, 16, 24, 32, 40, 48, MKAGN_ID_OFFSETS[record_size]),
+                    "itemsize": record_size,
+                }
+            )
+        records = np.fromfile(stream, dtype=dtype, count=int(count[0]))
+    return float(redshift[0]), float(local_timestep_yr[0]), records
+
+
+def read_sink_host_catalog(path: Path) -> np.ndarray:
+    """Read the compact sink-to-PSB table produced by the HR5 extractor."""
+
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    with path.open(encoding="ascii") as stream:
+        header = stream.readline().strip().split(",")
+    field_index = {name: index for index, name in enumerate(header)}
+    required = [name for name, _ in SINK_HOST_BASE_FIELDS]
+    missing = set(required) - set(field_index)
+    if missing:
+        raise ValueError(f"Sink host catalog is missing columns: {sorted(missing)}")
+    available_counts = [
+        name for name, _ in SINK_HOST_COUNT_FIELDS if name in field_index
+    ]
+    selected = required + available_counts
+    selected_dtype = np.dtype(
+        [(name, SINK_HOST_DTYPE.fields[name][0]) for name in selected]
+    )
+    loaded = np.loadtxt(
+        path,
+        delimiter=",",
+        skiprows=1,
+        usecols=tuple(field_index[name] for name in selected),
+        dtype=selected_dtype,
+        ndmin=1,
+    )
+    records = np.empty(loaded.size, dtype=SINK_HOST_DTYPE)
+    for name in required + available_counts:
+        records[name] = loaded[name]
+    for name, _ in SINK_HOST_COUNT_FIELDS:
+        if name not in available_counts:
+            records[name] = -1
+    if records.size == 0:
+        return records
+    if np.any(records["sink_id"] <= 0):
+        raise ValueError("Sink host catalog contains a nonpositive sink identifier")
+    identifier = np.sort(records["sink_id"])
+    if np.any(np.diff(identifier) == 0):
+        raise ValueError("Sink host catalog contains duplicate sink identifiers")
+    valid_background = np.isin(records["background"], (0, 1))
+    if not np.all(valid_background):
+        raise ValueError("Sink host catalog contains an invalid background flag")
+    assigned = records["background"] == 0
+    if np.any(records["galaxy_gid"][assigned] < 0):
+        raise ValueError("A PSB member has no galaxy identifier")
+    if np.any(records["galaxy_gid"][~assigned] != -1):
+        raise ValueError("A background sink has a PSB galaxy identifier")
+    for name, _ in SINK_HOST_COUNT_FIELDS:
+        value = records[name]
+        if np.any(value < -1):
+            raise ValueError(f"Sink host catalog contains an invalid {name}")
+    return records
+
+
+def lookup_sink_hosts(sink_id: np.ndarray, host_catalog: np.ndarray) -> np.ndarray:
+    """Return the row of each sink in a direct HR5 host catalog, or ``-1``."""
+
+    query = np.asarray(sink_id, dtype=np.int64)
+    if host_catalog.dtype != SINK_HOST_DTYPE:
+        raise ValueError("host_catalog has an incompatible dtype")
+    if host_catalog.size == 0:
+        return np.full(query.shape, -1, dtype=np.int64)
+    order = np.argsort(host_catalog["sink_id"], kind="stable")
+    ordered_id = host_catalog["sink_id"][order]
+    position = np.searchsorted(ordered_id, query)
+    inside = position < ordered_id.size
+    found = np.zeros(query.shape, dtype=bool)
+    found[inside] = ordered_id[position[inside]] == query[inside]
+    result = np.full(query.shape, -1, dtype=np.int64)
+    result[found] = order[position[found]]
+    return result
+
+
+def classify_sink_pair_hosts(
+    first_id: np.ndarray,
+    second_id: np.ndarray,
+    host_catalog: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Classify whether the two SMBHs occupy the same or distinct HR5 hosts.
+
+    Codes index :data:`HOST_RELATION_LABELS`. Sinks absent from the direct PSB
+    table take code 0, explicitly extracted FoF-background sinks take code 1,
+    and direct PSB assignments take codes 2 through 4.
+    """
+
+    first = np.asarray(first_id, dtype=np.int64)
+    second = np.asarray(second_id, dtype=np.int64)
+    if first.shape != second.shape:
+        raise ValueError("The two sink-identifier arrays must have the same shape")
+    first_row = lookup_sink_hosts(first, host_catalog)
+    second_row = lookup_sink_hosts(second, host_catalog)
+    relation = np.zeros(first.shape, dtype=np.int8)
+    found = (first_row >= 0) & (second_row >= 0)
+    if not np.any(found):
+        return relation, first_row, second_row
+
+    found_index = np.flatnonzero(found)
+    first_found = host_catalog[first_row[found]]
+    second_found = host_catalog[second_row[found]]
+    background = (first_found["background"] == 1) | (second_found["background"] == 1)
+    relation[found_index[background]] = 1
+
+    assigned = ~background
+    assigned_index = found_index[assigned]
+    first_assigned = first_found[assigned]
+    second_assigned = second_found[assigned]
+    same_psb = first_assigned["galaxy_gid"] == second_assigned["galaxy_gid"]
+    relation[assigned_index[same_psb]] = 2
+    different_psb = ~same_psb
+    same_fof = (
+        first_assigned["fof_index"][different_psb]
+        == second_assigned["fof_index"][different_psb]
+    )
+    different_index = assigned_index[different_psb]
+    relation[different_index[same_fof]] = 3
+    relation[different_index[~same_fof]] = 4
+    return relation, first_row, second_row
+
+
+def hard_xray_luminosity_from_bolometric(
+    bolometric_luminosity_erg_s: np.ndarray | float,
+) -> np.ndarray:
+    """Recover the 2--10 keV luminosity used by the legacy MkAGN calculation."""
+
+    bolometric = np.asarray(bolometric_luminosity_erg_s, dtype=np.float64)
+    hard_xray = np.zeros_like(bolometric)
+    positive = np.isfinite(bolometric) & (bolometric > 0.0)
+    scaled = bolometric[positive] / (1.0e10 * 3.9e33)
+    hard_xray[positive] = bolometric[positive] / (
+        4.073 * scaled ** (-0.026) + 12.60 * scaled**0.078
+    )
+    hard_xray[~np.isfinite(bolometric)] = np.nan
+    return hard_xray
+
+
+def infer_capture_receivers(
+    minor_id: np.ndarray,
+    minor_mass: np.ndarray,
+    minor_position: np.ndarray,
+    current_id: np.ndarray,
+    current_mass: np.ndarray,
+    current_position: np.ndarray,
+    box_size_cmpc_over_h: float = 1048.5,
+    mass_factor: float = 2.0,
+    radius_increment_cmpc_over_h: float = 0.002,
+    maximum_radius_cmpc_over_h: float = 0.5,
+) -> np.ndarray:
+    """Reproduce the receiver selection used by legacy ``mkmerging.c``.
+
+    For every sink that disappears between adjacent outputs, the search starts
+    at the distance to the nearest surviving sink.  The radius grows in fixed
+    increments until it contains a survivor at least ``mass_factor`` times as
+    massive as the disappearing sink.  The most massive eligible object inside
+    that radius is assigned as the receiver.
+    """
+
+    minor_id = np.asarray(minor_id, dtype=np.int64)
+    minor_mass = np.asarray(minor_mass, dtype=np.float64)
+    minor_position = np.asarray(minor_position, dtype=np.float64)
+    current_id = np.asarray(current_id, dtype=np.int64)
+    current_mass = np.asarray(current_mass, dtype=np.float64)
+    current_position = np.mod(np.asarray(current_position, dtype=np.float64), box_size_cmpc_over_h)
+    if current_id.size == 0:
+        return np.zeros(minor_id.size, dtype=np.int64)
+    tree = cKDTree(current_position, boxsize=box_size_cmpc_over_h)
+    receiver = np.zeros(minor_id.size, dtype=np.int64)
+    for event_number, (sink_id, mass, position) in enumerate(
+        zip(minor_id, minor_mass, minor_position)
+    ):
+        wrapped_position = np.mod(position, box_size_cmpc_over_h)
+        nearest_distance = float(tree.query(wrapped_position, k=1)[0])
+        radius = nearest_distance
+        while radius <= maximum_radius_cmpc_over_h + 1.0e-12:
+            neighbour = np.asarray(tree.query_ball_point(wrapped_position, radius), dtype=np.int64)
+            if neighbour.size:
+                eligible = neighbour[
+                    (current_id[neighbour] != sink_id)
+                    & (current_mass[neighbour] >= mass_factor * mass)
+                ]
+                if eligible.size:
+                    receiver[event_number] = current_id[
+                        eligible[np.argmax(current_mass[eligible])]
+                    ]
+                    break
+            radius += radius_increment_cmpc_over_h
+    return receiver
+
+
+def find_dual_agn_pairs(
+    records: np.ndarray,
+    redshift: float,
+    dimensionless_hubble: float,
+    luminosity_threshold_erg_s: float = 1.0e43,
+    minimum_separation_pkpc: float = 0.5,
+    maximum_separation_pkpc: float = 30.0,
+    box_size_cmpc_over_h: float = 717.229040,
+) -> dict[str, np.ndarray]:
+    """Select three-dimensional dual AGN pairs from one MkAGN snapshot."""
+
+    required = {"sink_id", "mass", "x", "y", "z", "Lbol"}
+    if records.dtype.names is None or not required.issubset(records.dtype.names):
+        raise ValueError("The MkAGN record does not contain the luminosity fields")
+    active = np.isfinite(records["Lbol"]) & (records["Lbol"] >= luminosity_threshold_erg_s)
+    active_record = records[active]
+    empty = {
+        "active_count": np.array(active_record.size, dtype=np.int64),
+        "id_1": np.empty(0, dtype=np.int64),
+        "id_2": np.empty(0, dtype=np.int64),
+        "separation_pkpc": np.empty(0),
+        "mass_1_msun": np.empty(0),
+        "mass_2_msun": np.empty(0),
+        "luminosity_1_erg_s": np.empty(0),
+        "luminosity_2_erg_s": np.empty(0),
+        "eddington_ratio_1": np.empty(0),
+        "eddington_ratio_2": np.empty(0),
+    }
+    if active_record.size < 2:
+        return empty
+    position = np.column_stack(
+        [active_record["x"], active_record["y"], active_record["z"]]
+    )
+    maximum_comoving_distance = (
+        maximum_separation_pkpc * dimensionless_hubble * (1.0 + redshift) / 1000.0
+    )
+    tree = cKDTree(np.mod(position, box_size_cmpc_over_h), boxsize=box_size_cmpc_over_h)
+    pair = tree.query_pairs(maximum_comoving_distance, output_type="ndarray")
+    if pair.size == 0:
+        return empty
+    delta = np.abs(position[pair[:, 0]] - position[pair[:, 1]])
+    delta = np.minimum(delta, box_size_cmpc_over_h - delta)
+    separation_pkpc = (
+        np.linalg.norm(delta, axis=1)
+        * 1000.0
+        / (dimensionless_hubble * (1.0 + redshift))
+    )
+    selected = separation_pkpc >= minimum_separation_pkpc
+    pair = pair[selected]
+    separation_pkpc = separation_pkpc[selected]
+    if pair.size == 0:
+        return empty
+
+    first = active_record[pair[:, 0]]
+    second = active_record[pair[:, 1]]
+    mass_first = first["mass"] / dimensionless_hubble
+    mass_second = second["mass"] / dimensionless_hubble
+    first_is_primary = mass_first >= mass_second
+    primary = np.where(first_is_primary, pair[:, 0], pair[:, 1])
+    secondary = np.where(first_is_primary, pair[:, 1], pair[:, 0])
+    primary_record = active_record[primary]
+    secondary_record = active_record[secondary]
+    primary_mass = primary_record["mass"] / dimensionless_hubble
+    secondary_mass = secondary_record["mass"] / dimensionless_hubble
+    eddington_coefficient = 1.26e38
+    return {
+        "active_count": np.array(active_record.size, dtype=np.int64),
+        "id_1": primary_record["sink_id"].astype(np.int64),
+        "id_2": secondary_record["sink_id"].astype(np.int64),
+        "separation_pkpc": separation_pkpc,
+        "mass_1_msun": primary_mass,
+        "mass_2_msun": secondary_mass,
+        "luminosity_1_erg_s": primary_record["Lbol"].astype(np.float64),
+        "luminosity_2_erg_s": secondary_record["Lbol"].astype(np.float64),
+        "eddington_ratio_1": primary_record["Lbol"] / (eddington_coefficient * primary_mass),
+        "eddington_ratio_2": secondary_record["Lbol"] / (eddington_coefficient * secondary_mass),
+    }
+
+
+def find_agn_pair_population(
+    records: np.ndarray,
+    redshift: float,
+    dimensionless_hubble: float,
+    luminosity_threshold_erg_s: float = 1.0e43,
+    luminosity_field: str = "Lbol",
+    minimum_separation_pkpc: float = 0.5,
+    maximum_separation_pkpc: float = 30.0,
+    minimum_mass_msun: float = 0.0,
+    box_size_cmpc_over_h: float = 717.229040,
+) -> dict[str, np.ndarray]:
+    """Select dual and offset AGN among three-dimensional SMBH pairs.
+
+    Every retained pair contains at least one member above the supplied
+    luminosity threshold.  ``is_dual`` identifies pairs for which both members
+    pass the threshold, while ``is_offset`` identifies pairs with one active
+    member.  Primary and secondary labels follow SMBH mass rather than
+    luminosity.
+    """
+
+    required = {
+        "sink_id",
+        "mass",
+        "x",
+        "y",
+        "z",
+        "vx",
+        "vy",
+        "vz",
+        "Lbol",
+    }
+    available_luminosity_fields = {"Lbol", "LhX"}
+    if luminosity_field not in available_luminosity_fields:
+        required.add(luminosity_field)
+    if records.dtype.names is None or not required.issubset(records.dtype.names):
+        raise ValueError("The MkAGN record does not contain the requested AGN fields")
+    if dimensionless_hubble <= 0.0:
+        raise ValueError("dimensionless_hubble must be positive")
+    if minimum_separation_pkpc < 0.0 or maximum_separation_pkpc <= minimum_separation_pkpc:
+        raise ValueError("The separation bounds must be positive and ordered")
+
+    mass_msun = np.asarray(records["mass"], dtype=np.float64) / dimensionless_hubble
+    usable = (
+        np.isfinite(mass_msun)
+        & (mass_msun >= minimum_mass_msun)
+        & np.isfinite(records["x"])
+        & np.isfinite(records["y"])
+        & np.isfinite(records["z"])
+    )
+    population = records[usable]
+    population_mass = mass_msun[usable]
+    population_lbol = np.asarray(population["Lbol"], dtype=np.float64)
+    if "LhX" in population.dtype.names:
+        population_lhx = np.asarray(population["LhX"], dtype=np.float64)
+    else:
+        population_lhx = hard_xray_luminosity_from_bolometric(population_lbol)
+    if luminosity_field == "Lbol":
+        luminosity = population_lbol
+    elif luminosity_field == "LhX":
+        luminosity = population_lhx
+    else:
+        luminosity = np.asarray(population[luminosity_field], dtype=np.float64)
+    active = np.isfinite(luminosity) & (luminosity >= luminosity_threshold_erg_s)
+
+    empty = {
+        "active_count": np.array(np.count_nonzero(active), dtype=np.int64),
+        "active_position_x_cmpc_over_h": np.asarray(
+            population["x"][active], dtype=np.float64
+        ),
+        "id_1": np.empty(0, dtype=np.int64),
+        "id_2": np.empty(0, dtype=np.int64),
+        "position_1_cmpc_over_h": np.empty((0, 3)),
+        "position_2_cmpc_over_h": np.empty((0, 3)),
+        "velocity_1_kms": np.empty((0, 3)),
+        "velocity_2_kms": np.empty((0, 3)),
+        "separation_pkpc": np.empty(0),
+        "mass_1_msun": np.empty(0),
+        "mass_2_msun": np.empty(0),
+        "luminosity_1_erg_s": np.empty(0),
+        "luminosity_2_erg_s": np.empty(0),
+        "lbol_1_erg_s": np.empty(0),
+        "lbol_2_erg_s": np.empty(0),
+        "lhx_1_erg_s": np.empty(0),
+        "lhx_2_erg_s": np.empty(0),
+        "eddington_ratio_1": np.empty(0),
+        "eddington_ratio_2": np.empty(0),
+        "active_1": np.empty(0, dtype=bool),
+        "active_2": np.empty(0, dtype=bool),
+        "is_dual": np.empty(0, dtype=bool),
+        "is_offset": np.empty(0, dtype=bool),
+    }
+    if population.size < 2 or not np.any(active):
+        return empty
+
+    position = np.column_stack([population["x"], population["y"], population["z"]])
+    maximum_comoving_distance = (
+        maximum_separation_pkpc * dimensionless_hubble * (1.0 + redshift) / 1000.0
+    )
+    tree = cKDTree(np.mod(position, box_size_cmpc_over_h), boxsize=box_size_cmpc_over_h)
+    pair = tree.query_pairs(maximum_comoving_distance, output_type="ndarray")
+    if pair.size == 0:
+        return empty
+
+    delta = position[pair[:, 1]] - position[pair[:, 0]]
+    delta -= box_size_cmpc_over_h * np.rint(delta / box_size_cmpc_over_h)
+    separation_pkpc = (
+        np.linalg.norm(delta, axis=1)
+        * 1000.0
+        / (dimensionless_hubble * (1.0 + redshift))
+    )
+    selected = (
+        (separation_pkpc >= minimum_separation_pkpc)
+        & (active[pair[:, 0]] | active[pair[:, 1]])
+    )
+    pair = pair[selected]
+    separation_pkpc = separation_pkpc[selected]
+    if pair.size == 0:
+        return empty
+
+    first_is_primary = population_mass[pair[:, 0]] >= population_mass[pair[:, 1]]
+    primary = np.where(first_is_primary, pair[:, 0], pair[:, 1])
+    secondary = np.where(first_is_primary, pair[:, 1], pair[:, 0])
+    primary_record = population[primary]
+    secondary_record = population[secondary]
+    primary_mass = population_mass[primary]
+    secondary_mass = population_mass[secondary]
+    active_primary = active[primary]
+    active_secondary = active[secondary]
+    eddington_coefficient = 1.26e38
+    result = {
+        "active_count": np.array(np.count_nonzero(active), dtype=np.int64),
+        "active_position_x_cmpc_over_h": np.asarray(
+            population["x"][active], dtype=np.float64
+        ),
+        "id_1": primary_record["sink_id"].astype(np.int64),
+        "id_2": secondary_record["sink_id"].astype(np.int64),
+        "position_1_cmpc_over_h": np.column_stack(
+            [primary_record["x"], primary_record["y"], primary_record["z"]]
+        ).astype(np.float64),
+        "position_2_cmpc_over_h": np.column_stack(
+            [secondary_record["x"], secondary_record["y"], secondary_record["z"]]
+        ).astype(np.float64),
+        "velocity_1_kms": np.column_stack(
+            [primary_record["vx"], primary_record["vy"], primary_record["vz"]]
+        ).astype(np.float64),
+        "velocity_2_kms": np.column_stack(
+            [secondary_record["vx"], secondary_record["vy"], secondary_record["vz"]]
+        ).astype(np.float64),
+        "separation_pkpc": separation_pkpc,
+        "mass_1_msun": primary_mass,
+        "mass_2_msun": secondary_mass,
+        "luminosity_1_erg_s": luminosity[primary],
+        "luminosity_2_erg_s": luminosity[secondary],
+        "lbol_1_erg_s": population_lbol[primary],
+        "lbol_2_erg_s": population_lbol[secondary],
+        "lhx_1_erg_s": population_lhx[primary],
+        "lhx_2_erg_s": population_lhx[secondary],
+        "eddington_ratio_1": population_lbol[primary]
+        / (eddington_coefficient * primary_mass),
+        "eddington_ratio_2": population_lbol[secondary]
+        / (eddington_coefficient * secondary_mass),
+        "active_1": active_primary,
+        "active_2": active_secondary,
+        "is_dual": active_primary & active_secondary,
+        "is_offset": np.logical_xor(active_primary, active_secondary),
+    }
+    return result
+
+
+def pair_component_multiplicity(
+    first_id: np.ndarray,
+    second_id: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return the connected-system multiplicity associated with every pair.
+
+    The second and third arrays contain the unique member identifiers and the
+    multiplicity of the connected system that contains each member.
+    """
+
+    _, pair_multiplicity, member, member_multiplicity = pair_component_labels(
+        first_id, second_id
+    )
+    return pair_multiplicity, member, member_multiplicity
+
+
+def pair_component_labels(
+    first_id: np.ndarray,
+    second_id: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Label connected SMBH systems and return their member multiplicities."""
+
+    first = np.asarray(first_id, dtype=np.int64)
+    second = np.asarray(second_id, dtype=np.int64)
+    if first.shape != second.shape or first.ndim != 1:
+        raise ValueError("Pair identifiers must be matching one-dimensional arrays")
+    if first.size == 0:
+        empty = np.empty(0, dtype=np.int64)
+        return empty, empty, empty, empty
+    member, inverse = np.unique(np.r_[first, second], return_inverse=True)
+    edge = inverse.reshape(2, first.size).T
+    row = np.r_[edge[:, 0], edge[:, 1]]
+    column = np.r_[edge[:, 1], edge[:, 0]]
+    graph = coo_matrix(
+        (np.ones(row.size, dtype=np.int8), (row, column)),
+        shape=(member.size, member.size),
+    )
+    _, label = connected_components(graph, directed=False)
+    size = np.bincount(label)
+    member_multiplicity = size[label]
+    pair_label = label[edge[:, 0]]
+    pair_multiplicity = member_multiplicity[edge[:, 0]]
+    return (
+        pair_label.astype(np.int64),
+        pair_multiplicity.astype(np.int64),
+        member,
+        member_multiplicity.astype(np.int64),
+    )
+
+
+def match_population_by_properties(
+    first_properties: np.ndarray,
+    second_properties: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Find unique minimum-distance matches after standardizing pair properties."""
+
+    first = np.asarray(first_properties, dtype=np.float64)
+    second = np.asarray(second_properties, dtype=np.float64)
+    if first.ndim != 2 or second.ndim != 2 or first.shape[1] != second.shape[1]:
+        raise ValueError("Property arrays must be two-dimensional with matching columns")
+    if first.size == 0 or second.size == 0:
+        empty_index = np.empty(0, dtype=np.int64)
+        return empty_index, empty_index, np.empty(0)
+    if np.any(~np.isfinite(first)) or np.any(~np.isfinite(second)):
+        raise ValueError("Matching properties must be finite")
+    pooled = np.vstack((first, second))
+    scale = np.std(pooled, axis=0, ddof=1)
+    scale[(~np.isfinite(scale)) | (scale == 0.0)] = 1.0
+    center = np.mean(pooled, axis=0)
+    standardized_first = (first - center) / scale
+    standardized_second = (second - center) / scale
+    difference = standardized_first[:, None, :] - standardized_second[None, :, :]
+    distance = np.sqrt(np.sum(difference**2, axis=2))
+    first_index, second_index = linear_sum_assignment(distance)
+    order = np.argsort(first_index, kind="stable")
+    first_index = first_index[order]
+    second_index = second_index[order]
+    return (
+        first_index.astype(np.int64),
+        second_index.astype(np.int64),
+        distance[first_index, second_index],
+    )
+
+
+def spatial_jackknife_pair_statistics(
+    active_position_x: np.ndarray,
+    pair_position_1_x: np.ndarray,
+    pair_position_2_x: np.ndarray,
+    selected_pair: np.ndarray,
+    volume_cmpc3: float,
+    box_size: float,
+    region_count: int = 8,
+) -> dict[str, float]:
+    """Estimate spatial variance by omitting equal slabs along the long HR5 axis."""
+
+    active_x = np.mod(np.asarray(active_position_x, dtype=np.float64), box_size)
+    first_x = np.asarray(pair_position_1_x, dtype=np.float64)
+    second_x = np.asarray(pair_position_2_x, dtype=np.float64)
+    selected = np.asarray(selected_pair, dtype=bool)
+    if first_x.shape != second_x.shape or first_x.shape != selected.shape:
+        raise ValueError("Pair positions and selection must have matching shapes")
+    if active_x.ndim != 1 or first_x.ndim != 1:
+        raise ValueError("Spatial jackknife positions must be one-dimensional")
+    if volume_cmpc3 <= 0.0 or box_size <= 0.0 or region_count < 2:
+        raise ValueError("Volume, box size, and region count must be positive")
+
+    delta_x = second_x - first_x
+    delta_x -= box_size * np.rint(delta_x / box_size)
+    pair_midpoint_x = np.mod(first_x + 0.5 * delta_x, box_size)
+    active_region = np.minimum(
+        (active_x * region_count / box_size).astype(np.int64), region_count - 1
+    )
+    pair_region = np.minimum(
+        (pair_midpoint_x * region_count / box_size).astype(np.int64), region_count - 1
+    )
+    active_count_by_region = np.bincount(active_region, minlength=region_count)
+    pair_count_by_region = np.bincount(pair_region[selected], minlength=region_count)
+    total_active = int(active_x.size)
+    total_pair = int(np.count_nonzero(selected))
+    retained_volume = volume_cmpc3 * (region_count - 1.0) / region_count
+    active_density_sample = (total_active - active_count_by_region) / retained_volume
+    density_sample = (total_pair - pair_count_by_region) / retained_volume
+    retained_active = total_active - active_count_by_region
+    fraction_sample = np.divide(
+        total_pair - pair_count_by_region,
+        retained_active,
+        out=np.full(region_count, np.nan),
+        where=retained_active > 0,
+    )
+
+    def error(sample: np.ndarray) -> float:
+        finite = sample[np.isfinite(sample)]
+        if finite.size < 2:
+            return float("nan")
+        return float(
+            np.sqrt((finite.size - 1.0) / finite.size * np.sum((finite - np.mean(finite)) ** 2))
+        )
+
+    return {
+        "region_count": int(region_count),
+        "active_number_density": total_active / volume_cmpc3,
+        "active_number_density_jackknife_error": error(active_density_sample),
+        "number_density": total_pair / volume_cmpc3,
+        "number_density_jackknife_error": error(density_sample),
+        "pair_fraction": total_pair / total_active if total_active else float("nan"),
+        "pair_fraction_jackknife_error": error(fraction_sample),
+    }
+
+
+def fibonacci_sightlines(count: int) -> np.ndarray:
+    """Return nearly uniform deterministic directions on the unit sphere."""
+
+    if count < 1:
+        raise ValueError("count must be positive")
+    index = np.arange(count, dtype=np.float64) + 0.5
+    z = 1.0 - 2.0 * index / count
+    radius = np.sqrt(np.maximum(0.0, 1.0 - z**2))
+    azimuth = np.pi * (3.0 - np.sqrt(5.0)) * index
+    return np.column_stack((radius * np.cos(azimuth), radius * np.sin(azimuth), z))
+
+
+def project_pair_observables(
+    position_1_cmpc_over_h: np.ndarray,
+    position_2_cmpc_over_h: np.ndarray,
+    velocity_1_kms: np.ndarray,
+    velocity_2_kms: np.ndarray,
+    sightlines: np.ndarray,
+    redshift: float,
+    dimensionless_hubble: float,
+    hubble_kms_mpc: float,
+    box_size_cmpc_over_h: float = 717.229040,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Project physical pairs and include Hubble flow in line-of-sight velocity."""
+
+    position_1 = np.asarray(position_1_cmpc_over_h, dtype=np.float64)
+    position_2 = np.asarray(position_2_cmpc_over_h, dtype=np.float64)
+    velocity_1 = np.asarray(velocity_1_kms, dtype=np.float64)
+    velocity_2 = np.asarray(velocity_2_kms, dtype=np.float64)
+    direction = np.asarray(sightlines, dtype=np.float64)
+    if position_1.shape != position_2.shape or position_1.ndim != 2 or position_1.shape[1] != 3:
+        raise ValueError("Pair positions must have shape (N, 3)")
+    if velocity_1.shape != position_1.shape or velocity_2.shape != position_1.shape:
+        raise ValueError("Pair velocities must match the position arrays")
+    if direction.ndim != 2 or direction.shape[1] != 3:
+        raise ValueError("sightlines must have shape (M, 3)")
+    norm = np.linalg.norm(direction, axis=1)
+    if np.any(~np.isfinite(norm)) or np.any(norm <= 0.0):
+        raise ValueError("sightlines must be finite nonzero vectors")
+    direction = direction / norm[:, None]
+
+    delta_comoving = position_2 - position_1
+    delta_comoving -= box_size_cmpc_over_h * np.rint(delta_comoving / box_size_cmpc_over_h)
+    delta_physical_mpc = delta_comoving / (dimensionless_hubble * (1.0 + redshift))
+    delta_velocity = velocity_2 - velocity_1
+    line_of_sight_distance = delta_physical_mpc @ direction.T
+    separation_squared = np.sum(delta_physical_mpc**2, axis=1)[:, None]
+    projected_separation_pkpc = 1000.0 * np.sqrt(
+        np.maximum(0.0, separation_squared - line_of_sight_distance**2)
+    )
+    peculiar_velocity = delta_velocity @ direction.T
+    line_of_sight_velocity_kms = np.abs(
+        peculiar_velocity + hubble_kms_mpc * line_of_sight_distance
+    )
+    return projected_separation_pkpc, line_of_sight_velocity_kms
+
+
+def interval_censored_cumulative_bounds(
+    event_lower_gyr: np.ndarray,
+    event_upper_gyr: np.ndarray,
+    time_grid_gyr: np.ndarray,
+    followup_gyr: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Bound cumulative incidence for interval events and common right censoring."""
+
+    lower = np.asarray(event_lower_gyr, dtype=np.float64)
+    upper = np.asarray(event_upper_gyr, dtype=np.float64)
+    grid = np.asarray(time_grid_gyr, dtype=np.float64)
+    if lower.shape != upper.shape or lower.ndim != 1:
+        raise ValueError("Event bounds must be matching one-dimensional arrays")
+    if grid.ndim != 1 or np.any(np.diff(grid) < 0.0) or np.any(grid < 0.0):
+        raise ValueError("time_grid_gyr must be non-negative and ordered")
+    if followup_gyr < 0.0:
+        raise ValueError("followup_gyr must be non-negative")
+    certain = np.isfinite(upper)
+    possible = np.isfinite(lower)
+    cumulative_lower = np.mean(certain[:, None] & (upper[:, None] <= grid[None, :]), axis=0)
+    cumulative_upper = np.mean(possible[:, None] & (lower[:, None] <= grid[None, :]), axis=0)
+    beyond_followup = grid > followup_gyr
+    cumulative_lower[beyond_followup] = np.nan
+    cumulative_upper[beyond_followup] = np.nan
+    return cumulative_lower, cumulative_upper
+
+
+def redshift_rate_model(
+    redshift: np.ndarray | float,
+    phi_star: float,
+    z_star: float,
+    alpha: float,
+    beta: float,
+) -> np.ndarray:
+    r"""Return :math:`\phi_* e^{-(z/z_*)^\beta}(z/z_*)^\alpha`."""
+
+    z = np.asarray(redshift, dtype=np.float64)
+    scaled = np.maximum(z / z_star, np.finfo(float).tiny)
+    return phi_star * np.exp(-(scaled**beta)) * scaled**alpha
+
+
+def locally_weighted_logarithmic_fit(
+    redshift: np.ndarray,
+    value: np.ndarray,
+    evaluation_redshift: np.ndarray,
+    value_error: np.ndarray | None = None,
+    *,
+    neighbor_count: int = 5,
+    degree: int = 2,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fit local polynomials in ``log(1 + z)`` and logarithmic value.
+
+    A separate weighted polynomial is evaluated at every requested redshift.
+    Tricube distance weights confine each fit to the nearest snapshots.  When
+    supplied, positive measurement errors provide inverse-variance weights in
+    logarithmic value. Non-positive measurements are omitted because the fit
+    is performed in logarithmic space. The local coordinate divides the
+    displacement from each evaluation point by the tricube bandwidth. The
+    returned coefficient columns give the constant, linear, and higher-order
+    terms in the normalized local coordinate, followed by the bandwidths.
+    """
+
+    z = np.asarray(redshift, dtype=np.float64)
+    y = np.asarray(value, dtype=np.float64)
+    target_z = np.asarray(evaluation_redshift, dtype=np.float64)
+    if z.shape != y.shape or z.ndim != 1:
+        raise ValueError("redshift and value must be matching one-dimensional arrays")
+    if target_z.ndim != 1 or np.any(~np.isfinite(target_z)) or np.any(target_z < 0.0):
+        raise ValueError("evaluation_redshift must be finite and non-negative")
+    if degree < 0:
+        raise ValueError("degree must be non-negative")
+    if neighbor_count < degree + 2:
+        raise ValueError("neighbor_count must exceed the polynomial degree by at least one")
+
+    selected = np.isfinite(z) & np.isfinite(y) & (z >= 0.0) & (y > 0.0)
+    logarithmic_error: np.ndarray | None = None
+    if value_error is not None:
+        error = np.asarray(value_error, dtype=np.float64)
+        if error.shape != y.shape:
+            raise ValueError("value_error must match value")
+        selected &= np.isfinite(error) & (error > 0.0)
+        logarithmic_error = error[selected] / y[selected]
+    x = np.log1p(z[selected])
+    logarithmic_value = np.log(y[selected])
+    if x.size < degree + 2:
+        return (
+            np.full(target_z.size, np.nan),
+            np.full((target_z.size, degree + 1), np.nan),
+            np.full(target_z.size, np.nan),
+        )
+
+    retained_neighbor_count = min(neighbor_count, x.size)
+    result = np.full(target_z.size, np.nan)
+    coefficients = np.full((target_z.size, degree + 1), np.nan)
+    bandwidths = np.full(target_z.size, np.nan)
+    for index, target in enumerate(np.log1p(target_z)):
+        distance = np.abs(x - target)
+        neighbor = np.argpartition(distance, retained_neighbor_count - 1)[
+            :retained_neighbor_count
+        ]
+        local_distance = distance[neighbor]
+        bandwidth = float(np.max(local_distance))
+        bandwidths[index] = bandwidth
+        if bandwidth == 0.0:
+            coefficients[index, 0] = float(np.mean(logarithmic_value[neighbor]))
+            coefficients[index, 1:] = 0.0
+            result[index] = float(np.exp(coefficients[index, 0]))
+            continue
+        scaled_distance = np.minimum(local_distance / bandwidth, 1.0)
+        weight = (1.0 - scaled_distance**3) ** 3
+        if logarithmic_error is not None:
+            weight /= logarithmic_error[neighbor] ** 2
+        positive_weight = weight > 0.0
+        if np.count_nonzero(positive_weight) < degree + 1:
+            positive_weight = np.ones(weight.size, dtype=bool)
+            weight = np.ones(weight.size)
+            if logarithmic_error is not None:
+                weight /= logarithmic_error[neighbor] ** 2
+        centered = (x[neighbor][positive_weight] - target) / bandwidth
+        design = np.column_stack(
+            [centered**power for power in range(degree + 1)]
+        )
+        square_root_weight = np.sqrt(weight[positive_weight])
+        coefficient, *_ = np.linalg.lstsq(
+            design * square_root_weight[:, None],
+            logarithmic_value[neighbor][positive_weight] * square_root_weight,
+            rcond=None,
+        )
+        coefficients[index] = coefficient
+        result[index] = float(np.exp(coefficient[0]))
+    return result, coefficients, bandwidths
+
+
+def locally_weighted_logarithmic_trend(
+    redshift: np.ndarray,
+    value: np.ndarray,
+    evaluation_redshift: np.ndarray,
+    value_error: np.ndarray | None = None,
+    *,
+    neighbor_count: int = 5,
+    degree: int = 2,
+) -> np.ndarray:
+    """Evaluate a local polynomial in ``log(1 + z)`` and logarithmic value."""
+
+    result, _, _ = locally_weighted_logarithmic_fit(
+        redshift,
+        value,
+        evaluation_redshift,
+        value_error,
+        neighbor_count=neighbor_count,
+        degree=degree,
+    )
+    return result
+
+
+def fit_redshift_rate(
+    redshift: np.ndarray,
+    rate: np.ndarray,
+    count: np.ndarray | None = None,
+) -> RedshiftRateFit:
+    """Fit the four-parameter redshift-rate form in logarithmic rate."""
+
+    z = np.asarray(redshift, dtype=np.float64)
+    y = np.asarray(rate, dtype=np.float64)
+    selected = np.isfinite(z) & np.isfinite(y) & (z > 0.0) & (y > 0.0)
+    if count is not None:
+        selected &= np.asarray(count) >= 3
+    z = z[selected]
+    y = y[selected]
+    if z.size < 5:
+        return RedshiftRateFit(np.nan, np.nan, np.nan, np.nan, False, int(z.size))
+
+    peak = int(np.argmax(y))
+    initial = np.array(
+        [np.log(max(y[peak] * np.e, 1.0e-30)), np.log(max(z[peak], 0.2)), 1.0, 4.0]
+    )
+    lower = np.array([np.log(1.0e-20), np.log(0.03), 0.05, 0.2])
+    upper = np.array([np.log(1.0), np.log(20.0), 4.0, 20.0])
+
+    def residual(parameters: np.ndarray) -> np.ndarray:
+        log_phi, log_z_star, alpha, beta = parameters
+        scaled = z / np.exp(log_z_star)
+        model_log = log_phi - scaled**beta + alpha * np.log(scaled)
+        return model_log - np.log(y)
+
+    result = least_squares(residual, initial, bounds=(lower, upper), max_nfev=5000)
+    log_phi, log_z_star, alpha, beta = result.x
+    return RedshiftRateFit(
+        float(np.exp(log_phi)),
+        float(np.exp(log_z_star)),
+        float(alpha),
+        float(beta),
+        bool(result.success),
+        int(z.size),
+    )
+
+
+def bootstrap_redshift_rate(
+    redshift: np.ndarray,
+    count: np.ndarray,
+    exposure_cmpc3_gyr: np.ndarray,
+    realizations: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Refit the redshift-rate model after Poisson resampling bin counts.
+
+    Successful rows contain ``phi_star``, ``z_star``, ``alpha``, and ``beta``
+    in that order. Failed fits are omitted from the returned array.
+    """
+
+    z = np.asarray(redshift, dtype=np.float64)
+    observed_count = np.asarray(count, dtype=np.int64)
+    exposure = np.asarray(exposure_cmpc3_gyr, dtype=np.float64)
+    if z.shape != observed_count.shape or z.shape != exposure.shape:
+        raise ValueError("redshift, count, and exposure must have matching shapes")
+    if np.any(observed_count < 0):
+        raise ValueError("count must be non-negative")
+    if np.any(~np.isfinite(exposure)) or np.any(exposure <= 0.0):
+        raise ValueError("exposure must be finite and positive")
+    if realizations < 1:
+        raise ValueError("realizations must be positive")
+
+    samples: list[tuple[float, float, float, float]] = []
+    for _ in range(realizations):
+        resampled_count = rng.poisson(observed_count)
+        fit = fit_redshift_rate(z, resampled_count / exposure, resampled_count)
+        parameters = (fit.phi_star, fit.z_star, fit.alpha, fit.beta)
+        if fit.success and np.all(np.isfinite(parameters)):
+            samples.append(parameters)
+    if not samples:
+        return np.empty((0, 4), dtype=np.float64)
+    return np.asarray(samples, dtype=np.float64)
+
+
+def delayed_redshift(
+    capture_time_gyr: np.ndarray,
+    delay_gyr: float,
+    cosmology: FlatLambdaCDM,
+    maximum_redshift: float = 20.0,
+    grid_size: int = 50000,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Map a source-frame fixed delay to redshift and flag future events."""
+
+    capture_time = np.asarray(capture_time_gyr, dtype=np.float64)
+    delayed_time = capture_time + delay_gyr
+    present_age = float(cosmology.age(0.0).value)
+    censored = delayed_time > present_age
+
+    redshift_grid = np.expm1(np.linspace(0.0, np.log1p(maximum_redshift), grid_size))
+    age_grid = np.asarray(cosmology.age(redshift_grid).value)
+    redshift = np.interp(
+        np.minimum(delayed_time, present_age),
+        age_grid[::-1],
+        redshift_grid[::-1],
+    )
+    redshift[censored] = np.nan
+    return redshift, censored
+
+
+def binned_source_rate(
+    event_redshift: np.ndarray,
+    redshift_edges: np.ndarray,
+    volume_cmpc3: float,
+    cosmology: FlatLambdaCDM,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Measure a source-frame event rate in redshift bins."""
+
+    edges = np.asarray(redshift_edges, dtype=np.float64)
+    count, _ = np.histogram(np.asarray(event_redshift), bins=edges)
+    age = np.asarray(cosmology.age(edges).value)
+    interval_gyr = age[:-1] - age[1:]
+    rate = count / (volume_cmpc3 * interval_gyr)
+    error = np.sqrt(count) / (volume_cmpc3 * interval_gyr)
+    return count, rate, error
+
+
+def bootstrap_binned_source_rate(
+    count: np.ndarray,
+    exposure_cmpc3_gyr: np.ndarray,
+    realizations: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Estimate binned-rate quantiles by Poisson resampling event counts.
+
+    The returned rows contain the 16th, 50th, and 84th percentiles. Each
+    column corresponds to one redshift bin.
+    """
+
+    observed_count = np.asarray(count, dtype=np.int64)
+    exposure = np.asarray(exposure_cmpc3_gyr, dtype=np.float64)
+    if observed_count.ndim != 1 or observed_count.shape != exposure.shape:
+        raise ValueError("count and exposure must be matching one-dimensional arrays")
+    if np.any(observed_count < 0):
+        raise ValueError("count must be non-negative")
+    if np.any(~np.isfinite(exposure)) or np.any(exposure <= 0.0):
+        raise ValueError("exposure must be finite and positive")
+    if realizations < 1:
+        raise ValueError("realizations must be positive")
+
+    resampled_count = rng.poisson(observed_count, size=(realizations, observed_count.size))
+    resampled_rate = resampled_count / exposure[None, :]
+    return np.quantile(resampled_rate, (0.16, 0.5, 0.84), axis=0)
+
+
+def cumulative_active_sources(
+    redshift: np.ndarray,
+    source_rate_cmpc3_gyr: np.ndarray,
+    residence_time_yr: float,
+    cosmology: FlatLambdaCDM,
+    solid_angle_sr: float = 4.0 * np.pi,
+) -> np.ndarray:
+    """Count active sources on the past light cone to each survey depth."""
+
+    z = np.asarray(redshift, dtype=np.float64)
+    rate = np.asarray(source_rate_cmpc3_gyr, dtype=np.float64)
+    distance = np.asarray(cosmology.comoving_distance(z).value)
+    hubble = np.asarray(cosmology.H(z).value)
+    speed_of_light_kms = 299792.458
+    shell_cmpc3_per_z = solid_angle_sr * distance**2 * speed_of_light_kms / hubble
+    integrand = rate * (residence_time_yr / 1.0e9) * shell_cmpc3_per_z
+    return np.r_[0.0, cumulative_trapezoid(integrand, z)]
+
+
+def circular_gw_background_contributions(
+    chirp_mass_msun: np.ndarray,
+    redshift: np.ndarray,
+    volume_cmpc3: float,
+    observed_frequency_hz: float,
+) -> np.ndarray:
+    r"""Return each event's contribution to :math:`h_c^2(f)`.
+
+    The expression applies the discrete form of the Phinney theorem to a
+    circular population whose frequency evolution is driven only by
+    gravitational radiation.  The input events must represent one comoving
+    volume over the sampled cosmic history.
+    """
+
+    mass = np.asarray(chirp_mass_msun, dtype=np.float64)
+    event_redshift = np.asarray(redshift, dtype=np.float64)
+    if mass.shape != event_redshift.shape:
+        raise ValueError("chirp_mass_msun and redshift must have matching shapes")
+    if np.any(~np.isfinite(mass)) or np.any(mass <= 0.0):
+        raise ValueError("chirp masses must be finite and positive")
+    if np.any(~np.isfinite(event_redshift)) or np.any(event_redshift < 0.0):
+        raise ValueError("redshifts must be finite and non-negative")
+    if not np.isfinite(volume_cmpc3) or volume_cmpc3 <= 0.0:
+        raise ValueError("volume_cmpc3 must be finite and positive")
+    if not np.isfinite(observed_frequency_hz) or observed_frequency_hz <= 0.0:
+        raise ValueError("observed_frequency_hz must be finite and positive")
+
+    mass_kg = mass * M_sun.value
+    volume_m3 = volume_cmpc3 * u.Mpc.to(u.m) ** 3
+    coefficient = (
+        4.0
+        * G.value ** (5.0 / 3.0)
+        / (3.0 * np.pi ** (1.0 / 3.0) * c.value**2)
+        * observed_frequency_hz ** (-4.0 / 3.0)
+        / volume_m3
+    )
+    return coefficient * mass_kg ** (5.0 / 3.0) / (1.0 + event_redshift) ** (1.0 / 3.0)
+
+
+def histogram_quantiles(
+    count: np.ndarray,
+    edges: np.ndarray,
+    probabilities: tuple[float, ...],
+) -> np.ndarray:
+    """Approximate quantiles from counts in adjacent scalar bins."""
+
+    histogram = np.asarray(count, dtype=np.float64)
+    bin_edges = np.asarray(edges, dtype=np.float64)
+    if histogram.shape[-1] + 1 != bin_edges.size:
+        raise ValueError("The final histogram dimension must match the supplied bin edges")
+    flat = histogram.reshape(-1, histogram.shape[-1])
+    result = np.full((flat.shape[0], len(probabilities)), np.nan)
+    centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    for row_number, row in enumerate(flat):
+        total = np.sum(row)
+        if total <= 0.0:
+            continue
+        cumulative = np.cumsum(row) / total
+        result[row_number] = np.interp(probabilities, cumulative, centers)
+    return result.reshape(histogram.shape[:-1] + (len(probabilities),))
