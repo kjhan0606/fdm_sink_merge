@@ -254,12 +254,29 @@ dual-AGN host table, and summary for one output. The combined redshift table is
 `hr5_dual_agn_host_evolution.csv`.
 
 The completed active-pair host catalogue contains 15,946 close active SMBH
-pairs. Of these, 1,242 already occupy one PSB galaxy and 13,370 acquire a common
-descendant in a later stored output. The selection using the FABLE SMBH and
-host-stellar-mass thresholds contains 1,254 systems in distinct PSB galaxies;
-1,145 acquire a common descendant. These counts describe a sample selected by
-AGN activity and separation. They are not the FABLE numerical-merger sample and
+pairs. Direct PSB assignments are available for both SMBHs in 15,940 systems.
+Of these, 1,242 already occupy one PSB galaxy and 14,698 occupy two distinct PSB
+galaxies. A total of 13,370 distinct-host systems acquire a common descendant in
+a later saved output. The selection using the FABLE SMBH and host-stellar-mass
+thresholds contains 1,254 systems in distinct PSB galaxies, of which 1,145
+acquire a common descendant. These counts describe a sample selected by AGN
+activity and separation. They are not the FABLE numerical-merger sample and
 must not be compared as raw event counts.
+
+The host-confirmed dual-AGN demographics are measured with
+
+```bash
+PYTHONPATH=src python scripts/analyze_hr5_dual_agn_host_demographics.py
+```
+
+The calculation separates spatially selected active SMBH pairs from pairs in
+two distinct PSB galaxies. It estimates the uncertainty with an eight-region
+spatial jackknife and fits both densities with the modified Schechter form used
+for the active-SMBH abundance. The distinct-host fit gives
+`phi = 6.689e-4 cMpc^-3`, `z_star = 3.787`, `alpha = 3.263`, and
+`beta = 2.796`, with an RMS residual of 0.281 dex. At redshifts 3.394, 2.848,
+1.499, and 0.625, the fractions of classifiable pairs in distinct PSB galaxies
+are 0.929, 0.951, 0.777, and 0.487, respectively.
 
 Run
 
@@ -299,7 +316,7 @@ python scripts/plot_hr5_matched_pair_hosts.py \
   --output results/hr5/hr5_matched_pair_host_evolution_fable.pdf
 ```
 
-It writes the matched catalogue and interval-censored summary below
+It writes the matched catalogue and time-bounded summary below
 `matched_pair_host_descendants/` in the canonical scratch data set. The figure
 and its plotted values are written to
 `results/hr5/hr5_matched_pair_host_evolution.pdf` and
@@ -360,6 +377,20 @@ the two SMBH point masses. The latter is deliberately a diagnostic rather than
 a complete binding criterion because it omits the host potential and unresolved
 matter around each SMBH.
 
+The sensitivity to the assigned companion is measured with
+
+```bash
+PYTHONPATH=src python scripts/analyze_hr5_companion_sensitivity.py
+```
+
+Within the FABLE mass analogue, the complete assigned catalogue contains
+25,494 possible binary captures. Requiring an assignment that is unique in the
+saved output leaves 22,451 systems. Requiring both uniqueness and
+`v_rel <= v_esc` for the two SMBH point masses leaves 33 systems. The respective
+fractions whose hosts require no additional joining time are bounded by
+0.637--0.885, 0.647--0.887, and 0.788--1.000. The last selection is not a full
+binding test because it omits the host potential and unresolved matter.
+
 The comparison figure uses all events that pass the FABLE-selection analogue
 as the denominator of the HR5 timing fractions. The lower limit counts only
 systems whose hosts certainly joined before the possible binary capture. The
@@ -368,14 +399,24 @@ times. This denominator matches the published FABLE fraction of 513 among
 10,716 selected events. The upper panel reports events per stored HR5 output
 interval and must not be interpreted as a rate without division by the interval
 width and effective volume. The shaded HR5 region joins the lower and upper
-interval-censoring limits; no midpoint is treated as a measured fraction.
+timing limits. No midpoint is treated as a measured fraction.
 
 `capture_host_descendants/hr5_fable_capture_host_evolution.csv` is the compact
 redshift table for this comparison. Its 121 rows record the event count, FABLE
-selection count, AGN states, time-order counts, interval-censoring bounds, and
+selection count, AGN states, time-order counts, timing bounds, and
 assigned-companion diagnostics at each host-assignment output. The full
 event-level table and nested JSON summary remain the authoritative sources for
 individual systems and aggregate cross-checks.
+
+Run
+
+```bash
+PYTHONPATH=src python scripts/validate_hr5_host_derived_outputs.py
+```
+
+after all derived calculations. The validator checks the host-demographic
+totals, modified Schechter fit, nested companion selections, matched host
+sample, and publication figures.
 
 Only directories named exactly `FoF.NNNNN` are admitted. Results in directories
 whose names contain `.mine`, `.test`, or `.try` are excluded.

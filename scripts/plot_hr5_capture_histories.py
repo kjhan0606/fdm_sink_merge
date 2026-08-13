@@ -411,7 +411,7 @@ def _plot_capture_tree(
     redshift_axis.set_yticks((6.0, 4.0, 3.0, 2.0, 1.0, float(redshift[-1])))
     position_span = max(positions.values()) - min(positions.values())
     axis.text(
-        positions[root_id] - 0.015 * position_span,
+        positions[root_id] - 0.040 * position_span,
         final_time - 0.015 * (final_time - lower_time),
         rf"ID {root_id}",
         color="#D55E00",

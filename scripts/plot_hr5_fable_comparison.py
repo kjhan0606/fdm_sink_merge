@@ -87,7 +87,7 @@ def main() -> None:
         color=COLORS[0],
         alpha=0.2,
         linewidth=0,
-        label="HR5 interval-censoring bound",
+        label="HR5 timing bounds",
     )
     axes[1].vlines(
         coordinate,

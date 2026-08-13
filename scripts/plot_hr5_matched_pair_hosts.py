@@ -186,11 +186,14 @@ def main() -> None:
 
     plt.rcParams.update(
         {
-            "font.size": 8,
-            "axes.labelsize": 8,
+            "font.family": "serif",
+            "font.size": 7,
+            "mathtext.fontset": "stix",
+            "axes.labelsize": 7,
             "xtick.labelsize": 7,
             "ytick.labelsize": 7,
             "legend.fontsize": 7,
+            "pdf.fonttype": 42,
         }
     )
     figure, axes = plt.subplots(1, 2, figsize=(7.1, 3.0))

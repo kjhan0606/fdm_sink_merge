@@ -318,7 +318,7 @@ def _plot_validation(path: Path, data: dict[str, np.ndarray]) -> None:
         loc="lower center",
         bbox_to_anchor=(0.64, 0.03),
         borderaxespad=0.0,
-        fontsize=7.0,
+        fontsize=8.4,
         handlelength=1.2,
         handletextpad=0.35,
     )
